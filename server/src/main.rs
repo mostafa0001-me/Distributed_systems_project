@@ -1,94 +1,37 @@
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-use image::{DynamicImage, RgbaImage, GenericImageView, FilterType, ImageOutputFormat};
-use std::io::Cursor;
-use steganography::encoder::Encoder;
+mod server_middleware;
+mod server;
+
+use std::sync::mpsc;
+use std::env;
+use std::thread;
 
 fn main() {
-    let listener = TcpListener::bind("127.0.0.1:8080").expect("Could not bind server to port");
-
-    for stream in listener.incoming() {
-        let stream = stream.expect("Failed to establish connection");
-        handle_client(stream);
-    }
-}
-
-// Function to handle incoming requests and perform steganography encryption
-fn handle_client(mut stream: TcpStream) {
-    let mut buffer = Vec::new();
-    
-    // Read the real image data sent by the client middleware
-    stream.read_to_end(&mut buffer).expect("Failed to read image");
-
-    // Save the received real image temporarily
-//    let temp_image_path = "/home/mostafa/Distributed-Systems-Project/server/tempor.png";
-//    std::fs::write(temp_image_path, &buffer).expect("Failed to save image");
-
-    // Load the real image
-//    let real_img = image::open(temp_image_path).expect("Failed to open real image");
-
-    // Load the default image
-    let default_image_path = "/home/mostafa/Distributed/background.png";
-    let default_img = image::open(default_image_path).expect("Failed to open default image");
-    println!("HERE");
-    // Resize the default image to be larger than the real image
-    let resized_default_img = resize_default_image_to_fit(default_img);
-    println!("HERE0");
-    // Perform steganography: Embed the real image into the resized default image
-    // Compress the real image into a buffer
-//    let real_image_buffer = compress_image_to_buffer(&real_img);
-    println!("HERE1");
-    // Perform steganography: Embed the buffer of the real image into the resized default image
-    let encrypted_image = embed_image_buffer_in_default(resized_default_img, &buffer);
-    println!("HERE2");
-    // Save the encrypted (embedded) image to a temporary file
-//    let encrypted_image_path = "/home/mostafa/Distributed-Systems-Project/server/enc.png";
-//    encrypted_image.save(encrypted_image_path).expect("Failed to save encrypted image");
-    
-    // Read the encrypted image and send it back to the client middleware
-//    let encrypted_image_data = std::fs::read(encrypted_image_path).expect("Failed to read encrypted image");
-//    let encrypted_image_data = encrypted_image.to_rgba();
-    let mut encrypted_image_buffer = Vec::new();
-    encrypted_image
-        .write_to(&mut Cursor::new(&mut encrypted_image_buffer), ImageOutputFormat::PNG)
-        .expect("Failed to write encrypted image to buffer");
-    stream.write_all(&encrypted_image_buffer).expect("Failed to send encrypted image");
-
-    // Cleanup temporary files
-//    std::fs::remove_file(temp_image_path).expect("Failed to remove temp image");
-}
-
-// Function to resize the default image to fit the real image and leave space for embedding
-fn resize_default_image_to_fit(default_img: DynamicImage) -> DynamicImage {
-    let (real_width, real_height) = default_img.dimensions();
-
-    // Resize the default image to be larger than the real image by a margin
-    let new_width = (real_width as f32 * 2.0) as u32;
-    let new_height = (real_height as f32 * 2.0) as u32;
-
-    // Resize the default image to be larger than the real image
-    default_img.resize(new_width, new_height, FilterType::Lanczos3)
-}
-
-// Function to embed the real image inside the default image using steganography
-// Function to compress the real image to a buffer
-//fn compress_image_to_buffer(real_img: &DynamicImage) -> Vec<u8> {
-//    let mut buffer = Vec::new();
-//    real_img.write_to(&mut Cursor::new(&mut buffer), ImageOutputFormat::PNG)
-//        .expect("Failed to write image to buffer");
-//    buffer
-//}
-
-// Function to embed the buffer of the real image inside the default image using steganography
-fn embed_image_buffer_in_default(default_img: DynamicImage, real_image_buffer: &[u8]) -> DynamicImage {
-    let default_rgba_img: RgbaImage = default_img.to_rgba();  // Convert default image to RGBA format
-
-    if real_image_buffer.len() > default_rgba_img.len() {
-        panic!("Default image is not large enough to embed the real image buffer.");
+    // Read server address and load request port from command-line arguments
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 3 {
+        eprintln!("Usage: <program> <server_address> <load_request_port> [other_servers...]");
+        return;
     }
 
-    let encoder = Encoder::new(real_image_buffer, DynamicImage::ImageRgba8(default_rgba_img.clone()));
-    let encoded_img = encoder.encode_alpha();
-    DynamicImage::ImageRgba8(encoded_img)
+    let server_address = args[1].clone();
+    let load_request_port: u16 = args[2].parse().expect("Invalid load request port");
+    let other_servers: Vec<String> = args.iter().skip(3).cloned().collect();
+
+    let (middleware_to_server_tx, middleware_to_server_rx) = mpsc::channel();
+    let (server_to_middleware_tx, server_to_middleware_rx) = mpsc::channel();
+
+    // Start the server middleware
+    let server_middleware_handle = thread::spawn(move || {
+        server_middleware::run_server_middleware(server_address, load_request_port, middleware_to_server_tx, server_to_middleware_rx);
+    });
+
+    // Start the server for encryption processing
+    let server_handle = thread::spawn(move || {
+        server::run_server(middleware_to_server_rx, server_to_middleware_tx);
+    });
+
+    // Wait for both threads to complete
+    server_middleware_handle.join().expect("Server middleware thread failed");
+    server_handle.join().expect("Server thread failed");
 }
 
