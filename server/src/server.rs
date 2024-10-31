@@ -1,26 +1,28 @@
-use std::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::task;
 use std::io::Cursor;
-use std::thread;
 use image::{DynamicImage, RgbaImage, GenericImageView, FilterType, ImageOutputFormat};
 use steganography::encoder::Encoder;
 
-pub fn run_server(rx: Receiver<Vec<u8>>, tx: Sender<Vec<u8>>) {
+pub async fn run_server(mut rx: Receiver<Vec<u8>>, tx: Sender<Vec<u8>>) {
     let default_image_path = "/home/mostafa/Distributed/background.png";
     let default_img = image::open(default_image_path).expect("Failed to open default image");
 
     // Resize the default image to be larger than the real image
     let resized_default_img = resize_default_image_to_fit(default_img);
 
-    while let Ok(data) = rx.recv() {
-        // Clone the resized default image and transmitter for the new thread
+    while let Some(data) = rx.recv().await {
+        // Clone the resized default image and transmitter for the new task
         let resized_default_img = resized_default_img.clone();
         let tx = tx.clone();
         println!("Image resize done");
-        // Spawn a new thread for each encryption task
-        thread::spawn(move || {
+
+        // Spawn a new task for each encryption task
+        task::spawn(async move {
             // Encrypt (embed) the image buffer into the default image
             let encrypted_data = embed_image_buffer_in_default(resized_default_img, &data);
             println!("Encryption done");
+
             // Write encrypted image data to buffer
             let mut encrypted_image_buffer = Vec::new();
             encrypted_data
@@ -28,7 +30,7 @@ pub fn run_server(rx: Receiver<Vec<u8>>, tx: Sender<Vec<u8>>) {
                 .expect("Failed to write encrypted image to buffer");
 
             // Send encrypted data back to the server middleware
-            tx.send(encrypted_image_buffer).expect("Failed to send encrypted data to server middleware");
+            tx.send(encrypted_image_buffer).await.expect("Failed to send encrypted data to server middleware");
         });
     }
 }
@@ -40,7 +42,7 @@ fn resize_default_image_to_fit(default_img: DynamicImage) -> DynamicImage {
     // Resize the default image to be larger than the real image by a margin
     let new_width = (real_width as f32 * 2.0) as u32;
     let new_height = (real_height as f32 * 2.0) as u32;
-    
+
     // Resize the default image to be larger than the real image
     default_img.resize(new_width, new_height, FilterType::Lanczos3)
 }
@@ -57,4 +59,3 @@ fn embed_image_buffer_in_default(default_img: DynamicImage, real_image_buffer: &
     let encoded_img = encoder.encode_alpha();
     DynamicImage::ImageRgba8(encoded_img)
 }
-

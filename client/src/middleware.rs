@@ -1,60 +1,84 @@
-use std::sync::mpsc::{Receiver, Sender};
-use std::net::TcpStream;
-use std::io::{Read, Write};
-use std::time::Duration;
-use std::thread;
+use tokio::net::TcpStream;
+use futures::future::join_all;
+use tokio::io::{AsyncWriteExt, AsyncReadExt};
+use tokio::sync::mpsc::{Receiver, Sender};
 
-// Main function to handle image data transmission through an elected server
-pub fn run_middleware(rx: Receiver<Vec<u8>>, tx: Sender<Vec<u8>>, server_ips: Vec<String>) {
+/// Main function to handle image data transmission through an elected server
+pub async fn run_middleware(
+    mut rx: Receiver<Vec<u8>>, 
+    tx: Sender<Vec<u8>>, 
+    server_ips: Vec<String>
+) {
     // Attempt to connect and select an available server
-    if let Some(mut server_stream) = find_available_server(&server_ips) {
-        println!("Middleware: Maintaining connection with the selected server.");
+    if let Some(mut server_stream) = find_available_server(&server_ips).await {
+        println!("Client Middleware: Maintaining connection with the selected server.");
 
         // Receive image data from client
-        let image_data = rx.recv().expect("Failed to receive image data from client");
-        println!("Middleware: Image data received from client.");
+        if let Some(image_data) = rx.recv().await {
+            println!("Client Middleware: Image data received from client.");
 
-        // Send image data to the selected server
-        server_stream.write_all(&image_data).expect("Failed to send image data to server");
+            // Send image data to the selected server
+            if let Err(e) = server_stream.write_all(&image_data).await {
+                eprintln!("Client Middleware: Failed to send image data to server: {}", e);
+                return;
+            }
 
-        // Signal to the server that all data has been sent and it can start processing
-        server_stream.shutdown(std::net::Shutdown::Write).expect("Failed to shutdown write stream");
+            // Signal to the server that all data has been sent and it can start processing
+            if let Err(e) = server_stream.shutdown().await {
+                eprintln!("Client Middleware: Failed to shutdown write stream: {}", e);
+                return;
+            }
 
-        // Receive encrypted response from the server
-        let mut response = Vec::new();
-        server_stream.read_to_end(&mut response).expect("Failed to read encrypted response from server");
+            // Receive encrypted response from the server
+            let mut response = Vec::new();
+            if let Err(e) = server_stream.read_to_end(&mut response).await {
+                eprintln!("Client Middleware: Failed to read encrypted response from server: {}", e);
+                return;
+            }
 
-        // Send the encrypted response back to the client
-        tx.send(response).expect("Failed to send response to client");
+            // Send the encrypted response back to the client
+            if let Err(e) = tx.send(response).await {
+                eprintln!("Client Middleware: Failed to send response to client: {}", e);
+            }
+        }
     } else {
-        eprintln!("Middleware: No servers are available to handle the request.");
+        eprintln!("Client Middleware: No servers are available to handle the request.");
     }
 }
 
-// Function to find and maintain an active connection with the selected server
-fn find_available_server(server_ips: &[String]) -> Option<TcpStream> {
-    for server_ip in server_ips {
-        // Attempt to connect to each server and send the "I want to send" message
-        if let Ok(mut stream) = TcpStream::connect(server_ip) {
-            // Send the lightweight message
-            if stream.write_all(b"I want to send").is_ok() {
-                println!("Middleware: Sent 'I want to send' message to server at {}.", server_ip);
+async fn find_available_server(server_ips: &[String]) -> Option<TcpStream> {
+    // Create a vector of futures, one for each server
+    let connection_futures: Vec<_> = server_ips
+        .iter()
+        .map(|ip| async move {
+            // Try to connect to the server
+            if let Ok(mut stream) = TcpStream::connect(ip).await {
+                // Set timeouts for the connection
+                stream.set_nodelay(true).ok();
+                
+                // Send the initial message
+                if let Ok(_) = stream.write_all(b"I want to send").await {
+                    println!("Client Middleware: Sent 'I want to send' message to server at {}", ip);
 
-                // Wait for the server's response confirming it has accepted the request
-                let mut buffer = [0; 1024];
-                if let Ok(bytes_read) = stream.read(&mut buffer) {
-                    let response = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
-                    if !response.is_empty() {
-                        println!("Middleware: Server at {} accepted the request.", response.trim());
-                        // Return the active stream with the selected server
-                        return Some(stream);
+                    // Read the response
+                    let mut buffer = [0; 1024];
+                    if let Ok(bytes_read) = stream.read(&mut buffer).await {
+                        let response = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+                        if !response.is_empty() {
+                            println!("Client Middleware: Server at {} accepted the request", ip);
+                            return Some((ip.clone(), stream));
+                        }
                     }
                 }
             }
-        }
-        // Add a brief delay to avoid overwhelming the servers
-        thread::sleep(Duration::from_millis(50));
-    }
-    None
+            None
+        })
+        .collect();
+
+    // Execute all connection attempts concurrently
+    let results = join_all(connection_futures).await;
+    
+    // Return the first successful connection
+    results.into_iter().flatten().next().map(|(_, stream)| stream)
 }
 

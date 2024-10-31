@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+futures = "0.3"
 tokio = { version = "1", features = ["full"] }
 image = "0.21"
 steganography = "1.0.2"
