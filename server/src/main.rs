@@ -31,7 +31,9 @@ async fn main() {
         server_address,
         load_request_port,
         middleware_to_server_tx,
-        server_to_middleware_rx).await;
+        server_to_middleware_rx,
+        other_servers
+        ).await;
     });
 
     // Start the server for encryption processing
