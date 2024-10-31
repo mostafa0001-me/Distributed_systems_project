@@ -1,12 +1,12 @@
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task;
 use std::io::Cursor;
-use image::{DynamicImage, RgbaImage, GenericImageView, FilterType, ImageOutputFormat};
+use image::{DynamicImage, ImageOutputFormat};
 use steganography::encoder::Encoder;
 
 pub async fn run_server(mut rx: Receiver<Vec<u8>>, tx: Sender<Vec<u8>>) {
     // Load the pre-resized default image directly
-    let default_image_path = "/home/mostafa/Distributed/server/default_resized.png";
+    let default_image_path = "default_resized.png";
     let default_img = image::open(default_image_path).expect("Failed to open default image");
 
     while let Some(data) = rx.recv().await {
@@ -32,17 +32,17 @@ pub async fn run_server(mut rx: Receiver<Vec<u8>>, tx: Sender<Vec<u8>>) {
     }
 }
 
-// Function to resize the default image to fit the real image and leave space for embedding
-fn resize_default_image_to_fit(default_img: DynamicImage) -> DynamicImage {
-    let (real_width, real_height) = default_img.dimensions();
+// // Function to resize the default image to fit the real image and leave space for embedding
+// fn resize_default_image_to_fit(default_img: DynamicImage) -> DynamicImage {
+//     let (real_width, real_height) = default_img.dimensions();
 
-    // Resize the default image to be larger than the real image by a margin
-    let new_width = (real_width as f32 * 2.0) as u32;
-    let new_height = (real_height as f32 * 2.0) as u32;
+//     // Resize the default image to be larger than the real image by a margin
+//     let new_width = (real_width as f32 * 2.0) as u32;
+//     let new_height = (real_height as f32 * 2.0) as u32;
 
-    // Resize the default image to be larger than the real image
-    default_img.resize(new_width, new_height, FilterType::Lanczos3)
-}
+//     // Resize the default image to be larger than the real image
+//     default_img.resize(new_width, new_height, FilterType::Lanczos3)
+// }
 
 // Function to embed real image buffer into the default image's alpha channel
 fn embed_image_buffer_in_default(default_img: DynamicImage, real_image_buffer: &[u8]) -> DynamicImage {

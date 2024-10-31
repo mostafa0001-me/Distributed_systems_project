@@ -1,5 +1,5 @@
-mod server_middleware;
-mod server;
+pub mod server_middleware;
+pub mod server;
 
 use tokio::sync::{mpsc, Mutex};
 use tokio::task;
@@ -27,7 +27,11 @@ async fn main() {
 
     // Start the server middleware
     let server_middleware_handle = task::spawn(async move {
-        server_middleware::run_server_middleware(server_address, load_request_port, middleware_to_server_tx, server_to_middleware_rx).await;
+        server_middleware::run_server_middleware(
+        server_address,
+        load_request_port,
+        middleware_to_server_tx,
+        server_to_middleware_rx).await;
     });
 
     // Start the server for encryption processing

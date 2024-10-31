@@ -3,6 +3,19 @@ use tokio::sync::{mpsc::Sender, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::task;
 use std::sync::Arc;
+use serde::{Serialize, Deserialize};
+use bincode;
+
+
+
+// Define a struct for requests, including a unique ID and the image data
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ImageRequest {
+    pub client_ip : String,
+    pub request_id: String,
+    pub image_data: Vec<u8>,
+}
+
 
 // A structure to hold the server's state, including its load.
 struct ServerState {
@@ -79,10 +92,11 @@ async fn handle_connection(
         // Now transition to receiving and processing the image data
         let mut data = Vec::new();
         stream.read_to_end(&mut data).await.expect("Failed to read image data from client middleware");
-        println!("Image data received from client.");
-
+        let image_request: ImageRequest = bincode::deserialize(&data).expect("Failed to deserialize ImageRequest");
+        println!("Request {} received from client {}.", image_request.request_id, image_request.client_ip);
+        
         // Send image data to the server for encryption
-        server_tx.send(data).await.expect("Failed to send data to server");
+        server_tx.send(image_request.image_data).await.expect("Failed to send data to server");
 
         // Receive the encrypted data from the server
         let encrypted_data = {

@@ -2,49 +2,62 @@ use tokio::net::TcpStream;
 use futures::future::join_all;
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
 use tokio::sync::mpsc::{Receiver, Sender};
+use crate::client::ImageRequest;
+use bincode;
 
 /// Main function to handle image data transmission through an elected server
 pub async fn run_middleware(
-    mut rx: Receiver<Vec<u8>>, 
+    mut rx: Receiver<ImageRequest>, 
     tx: Sender<Vec<u8>>, 
     server_ips: Vec<String>
 ) {
-    // Attempt to connect and select an available server
-    if let Some(mut server_stream) = find_available_server(&server_ips).await {
-        println!("Client Middleware: Maintaining connection with the selected server.");
+    while let Some(image_request) = rx.recv().await {
+        // Clone tx and server_ips for use in the spawned task
+        let tx_clone = tx.clone();
+        let server_ips_clone = server_ips.clone();
+        
+        // Spawn a new task to handle each request concurrently
+        tokio::spawn(async move {
+            // Attempt to connect to an available server
+            if let Some(mut server_stream) = find_available_server(&server_ips_clone).await {
+                // print ip of server
+                println!("Client Middleware: Client Connected {} to server {} for request number {}.", image_request.client_ip, server_stream.peer_addr().unwrap(), image_request.request_id);
 
-        // Receive image data from client
-        if let Some(image_data) = rx.recv().await {
-            println!("Client Middleware: Image data received from client.");
 
-            // Send image data to the selected server
-            if let Err(e) = server_stream.write_all(&image_data).await {
-                eprintln!("Client Middleware: Failed to send image data to server: {}", e);
-                return;
+                // Serialize the ImageRequest
+                let serialized_data = bincode::serialize(&image_request)
+                    .expect(&format!("Failed to serialize ImageRequest {}", image_request.request_id));
+
+                // Send the serialized data to the server
+                if let Err(e) = server_stream.write_all(&serialized_data).await {
+                    eprintln!("Client Middleware: Failed to send image data to server: {}", e);
+                    return;
+                }
+
+                // Signal the server to start processing
+                if let Err(e) = server_stream.shutdown().await {
+                    eprintln!("Client Middleware: Failed to shutdown write stream: {}", e);
+                    return;
+                }
+
+                // Receive the encrypted response from the server
+                let mut response = Vec::new();
+                if let Err(e) = server_stream.read_to_end(&mut response).await {
+                    eprintln!("Client Middleware: Failed to read encrypted response from server: {}", e);
+                    return;
+                }
+
+                // Send the response back to the client
+                if let Err(e) = tx_clone.send(response).await {
+                    eprintln!("Client Middleware: Failed to send response to client: {}", e);
+                }
+            } else {
+                eprintln!("Client Middleware: No servers are available to handle the request.");
             }
-
-            // Signal to the server that all data has been sent and it can start processing
-            if let Err(e) = server_stream.shutdown().await {
-                eprintln!("Client Middleware: Failed to shutdown write stream: {}", e);
-                return;
-            }
-
-            // Receive encrypted response from the server
-            let mut response = Vec::new();
-            if let Err(e) = server_stream.read_to_end(&mut response).await {
-                eprintln!("Client Middleware: Failed to read encrypted response from server: {}", e);
-                return;
-            }
-
-            // Send the encrypted response back to the client
-            if let Err(e) = tx.send(response).await {
-                eprintln!("Client Middleware: Failed to send response to client: {}", e);
-            }
-        }
-    } else {
-        eprintln!("Client Middleware: No servers are available to handle the request.");
+        });
     }
 }
+
 
 async fn find_available_server(server_ips: &[String]) -> Option<TcpStream> {
     // Create a vector of futures, one for each server

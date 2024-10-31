@@ -8,3 +8,5 @@ futures = "0.3"
 tokio = { version = "1", features = ["full"] }
 image = "0.21"
 steganography = "1.0.2"
+serde = { version = "1.0", features = ["derive"] }
+bincode = "1.3"
