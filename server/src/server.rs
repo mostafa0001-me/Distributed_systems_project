@@ -5,22 +5,19 @@ use image::{DynamicImage, RgbaImage, GenericImageView, FilterType, ImageOutputFo
 use steganography::encoder::Encoder;
 
 pub async fn run_server(mut rx: Receiver<Vec<u8>>, tx: Sender<Vec<u8>>) {
-    let default_image_path = "/home/mostafa/Distributed/background.png";
+    // Load the pre-resized default image directly
+    let default_image_path = "/home/mostafa/Distributed/server/default_resized.png";
     let default_img = image::open(default_image_path).expect("Failed to open default image");
 
-    // Resize the default image to be larger than the real image
-    let resized_default_img = resize_default_image_to_fit(default_img);
-
     while let Some(data) = rx.recv().await {
-        // Clone the resized default image and transmitter for the new task
-        let resized_default_img = resized_default_img.clone();
+        let default_img = default_img.clone();  // Clone the default image for thread safety
         let tx = tx.clone();
-        println!("Image resize done");
+        println!("Using pre-resized default image");
 
         // Spawn a new task for each encryption task
         task::spawn(async move {
             // Encrypt (embed) the image buffer into the default image
-            let encrypted_data = embed_image_buffer_in_default(resized_default_img, &data);
+            let encrypted_data = embed_image_buffer_in_default(default_img, &data);
             println!("Encryption done");
 
             // Write encrypted image data to buffer
@@ -49,13 +46,10 @@ fn resize_default_image_to_fit(default_img: DynamicImage) -> DynamicImage {
 
 // Function to embed real image buffer into the default image's alpha channel
 fn embed_image_buffer_in_default(default_img: DynamicImage, real_image_buffer: &[u8]) -> DynamicImage {
-    let default_rgba_img: RgbaImage = default_img.to_rgba(); // Convert default image to RGBA format
+    //let default_rgba_img: RgbaImage = default_img.to_rgba(); // Convert default image to RGBA format
 
-    if real_image_buffer.len() > default_rgba_img.len() {
-        panic!("Default image is not large enough to embed the real image buffer.");
-    }
 
-    let encoder = Encoder::new(real_image_buffer, DynamicImage::ImageRgba8(default_rgba_img.clone()));
+    let encoder = Encoder::new(real_image_buffer, default_img);
     let encoded_img = encoder.encode_alpha();
     DynamicImage::ImageRgba8(encoded_img)
 }
