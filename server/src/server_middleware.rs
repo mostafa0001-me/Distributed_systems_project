@@ -9,6 +9,10 @@ use sysinfo::System;
 use futures::future::join_all;
 use std::collections::HashMap;
 use std::time::{Duration, Instant}; 
+use tokio::time::sleep;
+use rand::{Rng, SeedableRng};
+use rand::rngs::StdRng;
+use std::process;
 
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -31,7 +35,8 @@ impl ServerId {
     fn calculate_id(&mut self, load: u32, system: &mut System) {
         system.refresh_cpu_all();
         let cpu_utilization = system.global_cpu_usage();
-        self.id = 0.2f32 * load as f32 + 0.8f32 * cpu_utilization;
+        //self.id = 0.2f32 * load as f32 + 0.8f32 * cpu_utilization;
+        self.id = load;
     }
 
     fn get_id(&self) -> f32 {
@@ -140,7 +145,7 @@ async fn handle_connection(
     state: Arc<Mutex<ServerState>>,
     other_server_addresses: Vec<String>,
 ) {
-    println!("Beginning handle_connection");
+ //   println!("Beginning handle_connection");
     let mut message = Vec::new();
     stream
         .read_to_end(&mut message)
@@ -168,7 +173,8 @@ async fn handle_connection(
                 );
                 return;
             }
-
+	        //Delay before election
+            sleep(Duration::from_micros(StdRng::seed_from_u64(process::id() as u64).gen_range(0..=10_000))).await;
             // Initiate election
             let is_elected: bool = initiate_election(
                 state.clone(),
@@ -424,4 +430,3 @@ async fn listen_for_election_messages(address: String, state: Arc<Mutex<ServerSt
         }
     }
 }
-
