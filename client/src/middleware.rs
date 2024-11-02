@@ -28,7 +28,7 @@ pub async fn run_middleware(
         let request_id = image_request.request_id.clone();
         tokio::spawn(async move {
             // Attempt to connect to an available server
-            if let Some(mut server_stream) = find_available_server(&server_ips_clone, &client_ip, &request_id).await {
+            if let Some(mut server_stream) = find_available_server_t(&server_ips_clone, &client_ip, &request_id).await {
                 // Print IP of server
                 println!(
                     "Client Middleware: Client Connected {} to server {} for request number {}.",
@@ -109,7 +109,7 @@ async fn find_available_server(
                 if let Ok(bytes_read) = stream.read(&mut ack_buffer).await {
                     let response = String::from_utf8_lossy(&ack_buffer[..bytes_read]).to_string();
                     if !response.is_empty() {
-                        println!("Client Middleware: Server at {} accepted the request", ip);
+                        println!("Client Middleware: Server at {} accepted the request with response {}", ip, response);
                         return Some(stream);
                     }
                 }
@@ -124,3 +124,55 @@ async fn find_available_server(
     // Return the first successful connection
     results.into_iter().flatten().next()
 }
+
+
+async fn find_available_server_t(  
+    server_ips: &[String],   
+    client_ip: &String,   
+    request_id: &String  
+) -> Option<TcpStream> {
+ //   for _ in 0..=3 {  
+    for ip in server_ips {  
+        // Try to connect to the server  
+        if let Ok(mut stream) = TcpStream::connect(ip).await {  
+            // Set no-delay option for the connection  
+            stream.set_nodelay(true).ok();  
+  
+            // Serialize the LightRequest  
+            let light = LightRequest {  
+                client_ip: client_ip.clone(),  
+                request_id: request_id.clone(),  
+                message_data: "I want to send".to_string(),  
+            };  
+  
+            let serialized_data = match bincode::serialize(&light) {  
+                Ok(data) => data,  
+                Err(e) => {  
+                    eprintln!("Failed to serialize LightRequest {}: {}", light.request_id, e);  
+                    continue;  
+                }  
+            };  
+  
+            let mut buffer_send = Vec::new();  
+            buffer_send.extend_from_slice(&serialized_data);  
+  
+            // Send the serialized data to the server  
+            if let Err(e) = stream.write(&buffer_send).await {  
+                eprintln!("Client Middleware: Failed to send data to server: {}", e);  
+                continue;  
+            }  
+  
+            // Read the response from the server  
+            let mut ack_buffer = [0; 128];  
+            if let Ok(bytes_read) = stream.read(&mut ack_buffer).await {  
+                let response = String::from_utf8_lossy(&ack_buffer[..bytes_read]).to_string();  
+                if !response.is_empty() {  
+                    println!("Client Middleware: Server at {} accepted the request", ip);  
+                    return Some(stream);  
+                }  
+            }  
+        }  
+    }
+//}  
+    None  
+}  

@@ -9,11 +9,6 @@ use sysinfo::System;
 use futures::future::join_all;
 use std::collections::HashMap;
 use std::time::{Duration, Instant}; 
-use tokio::time::sleep;
-use rand::{Rng, SeedableRng};
-use rand::rngs::StdRng;
-use std::process;
-
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct LightMessage {
@@ -35,8 +30,8 @@ impl ServerId {
     fn calculate_id(&mut self, load: u32, system: &mut System) {
         system.refresh_cpu_all();
         let cpu_utilization = system.global_cpu_usage();
-        //self.id = 0.2f32 * load as f32 + 0.8f32 * cpu_utilization;
-        self.id = load as f32;
+        self.id = 0.2f32 * load as f32 + 0.8f32 * cpu_utilization;
+        //self.id = load as f32;
     }
 
     fn get_id(&self) -> f32 {
@@ -105,8 +100,9 @@ pub async fn run_server_middleware(
     // Start a task to listen for election messages
     let election_listener_state = Arc::clone(&state);
     //let election_listener_address = format!("0.0.0.0:{}", election_port);
+    let election_listener_address = election_address.clone();
     task::spawn(listen_for_election_messages(
-        election_address,
+        election_listener_address,
         election_listener_state,
     ));
 
@@ -119,23 +115,25 @@ pub async fn run_server_middleware(
         }
     });
 
-    let rng = Arc::new(Mutex::new(StdRng::seed_from_u64(process::id() as u64)));
+    //let rng = Arc::new(Mutex::new(StdRng::seed_from_u64(process::id() as u64)));
 
     while let Ok((stream, _)) = listener.accept().await {
         let server_tx = server_tx.clone();
         let server_rx = Arc::clone(&server_rx);
         let state = Arc::clone(&state);
         let other_server_election_addresses = other_server_election_addresses.clone();
-        let rng = Arc::clone(&rng);
+      //  let rng = Arc::clone(&rng);
 
+        let election_listener_address2 = election_address.clone();
         task::spawn(async move {
             handle_connection(
                 stream,
                 server_tx,
                 server_rx,
                 state,
+                election_listener_address2,
                 other_server_election_addresses,
-                rng
+        //        rng
             )
             .await;
         });
@@ -147,8 +145,9 @@ async fn handle_connection(
     server_tx: Sender<Vec<u8>>,
     server_rx: Arc<Mutex<tokio::sync::mpsc::Receiver<Vec<u8>>>>,
     state: Arc<Mutex<ServerState>>,
+    my_election_address: String,
     other_server_election_addresses: Vec<String>,
-    mut rng: Arc<tokio::sync::Mutex<StdRng>>,
+  //  rng: Arc<tokio::sync::Mutex<StdRng>>,
 ) {
  //   println!("Beginning handle_connection");
   //  let mut message = Vec::new();
@@ -179,13 +178,14 @@ async fn handle_connection(
                 );
                 return;
             }
-	        //Delay before election
-            let d = Duration::from_millis(rng.lock().await.gen_range(1..=1000));
-            println!("Delaying before election {} with delay {}", process::id(), d.as_millis());
-            sleep(d).await;
+	        // //Delay before election
+            // let d = Duration::from_millis(rng.lock().await.gen_range(1..=1000));
+            // println!("Delaying before election {} with delay {}", process::id(), d.as_millis());
+            // sleep(d).await;
             // Initiate election
             let is_elected: bool = initiate_election(
                 state.clone(),
+                my_election_address.clone(),
                 other_server_election_addresses.clone(),
                 light_message.client_ip.clone(),
                 light_message.request_id.clone(),
@@ -246,6 +246,7 @@ async fn handle_connection(
 
 async fn initiate_election(
     state: Arc<Mutex<ServerState>>,
+    my_election_address: String,
     other_server_election_addresses: Vec<String>,
     client_ip: String,
     request_id: String,
@@ -264,7 +265,7 @@ async fn initiate_election(
 
     for address in other_server_election_addresses.iter() {
         let address = address.clone();
-        let election_message = format!("ELECTION:{};{};{}", own_id, client_ip, request_id);
+        let election_message = format!("ELECTION:{};{};{};{}", own_id, client_ip, request_id, my_election_address);
         // Create a future for each server
         let future = async move {
             // Attempt to connect to the server
@@ -341,7 +342,7 @@ async fn initiate_election(
             .add_request(client_ip.clone(), request_id.clone());
 
         // Send LEADER message to other servers
-        let leader_message = format!("LEADER;{};{}", client_ip, request_id);
+        let leader_message = format!("LEADER:{};{}", client_ip, request_id);
         let mut leader_futures = Vec::new();
 
         for address in other_server_election_addresses.iter() {
@@ -370,7 +371,7 @@ async fn initiate_election(
 
 // Function to listen for election messages from other servers
 async fn listen_for_election_messages(address: String, state: Arc<Mutex<ServerState>>) {
-    let listener = TcpListener::bind(address)
+    let listener = TcpListener::bind(address.clone())
         .await
         .expect("Failed to bind election listener address");
     while let Ok((mut stream, _)) = listener.accept().await {
@@ -382,10 +383,11 @@ async fn listen_for_election_messages(address: String, state: Arc<Mutex<ServerSt
                 let parts: Vec<&str> = message["ELECTION:".len()..].trim().split(';').collect();
                 println!("Received election message: {}", message);
                 print!("parts: {}", parts.len());
-                if parts.len() == 3 {
+                if parts.len() == 4 {
                     let sender_id: f32 = parts[0].parse().unwrap_or(f32::MAX);
                     let client_ip = parts[1].to_string();
                     let request_id = parts[2].to_string();
+                    let sender_election_address = parts[3].to_string();
                     //print a message with the sender_id, client_ip and request_id
                     println!("Received election message from ID {}. Client IP: {}. Request ID: {}.", sender_id, client_ip, request_id);
 
@@ -415,7 +417,8 @@ async fn listen_for_election_messages(address: String, state: Arc<Mutex<ServerSt
                     );
 
                     // Compare IDs
-                    if own_id < sender_id {
+                    println!("Comparing server IPS. Listener: {} Sender: {}", address, sender_election_address);
+                    if own_id < sender_id || (own_id == sender_id && address < sender_election_address) {
                         // Our ID is lower, reply "OK"
                         if let Err(e) = stream.write_all(b"OK").await {
                             println!("Failed to send OK to election message: {}", e);
