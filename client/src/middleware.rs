@@ -23,7 +23,6 @@ pub async fn run_middleware(
         // Clone tx and server_ips for use in the spawned task
         let tx_clone = tx.clone();
         let server_ips_clone = server_ips.clone();
-        
         // Spawn a new task to handle each request concurrently
         let client_ip = image_request.client_ip.clone();
         let request_id = image_request.request_id.clone();
@@ -96,16 +95,19 @@ async fn find_available_server(
                     }
                 };
 
+                let mut buffer_send = Vec::new();
+                buffer_send.extend_from_slice(&serialized_data);
+
                 // Send the serialized data to the server
-                if let Err(e) = stream.write_all(&serialized_data).await {
+                if let Err(e) = stream.write(&buffer_send).await {
                     eprintln!("Client Middleware: Failed to send data to server: {}", e);
                     return None;
                 }
 
                 // Read the response from the server
-                let mut buffer = [0; 1024];
-                if let Ok(bytes_read) = stream.read(&mut buffer).await {
-                    let response = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+                let mut ack_buffer = [0; 128];
+                if let Ok(bytes_read) = stream.read(&mut ack_buffer).await {
+                    let response = String::from_utf8_lossy(&ack_buffer[..bytes_read]).to_string();
                     if !response.is_empty() {
                         println!("Client Middleware: Server at {} accepted the request", ip);
                         return Some(stream);

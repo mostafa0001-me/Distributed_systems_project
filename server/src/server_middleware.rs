@@ -36,7 +36,7 @@ impl ServerId {
         system.refresh_cpu_all();
         let cpu_utilization = system.global_cpu_usage();
         //self.id = 0.2f32 * load as f32 + 0.8f32 * cpu_utilization;
-        self.id = load;
+        self.id = load as f32;
     }
 
     fn get_id(&self) -> f32 {
@@ -95,7 +95,7 @@ pub async fn run_server_middleware(
     election_port: u16,
     server_tx: Sender<Vec<u8>>,
     server_rx: Arc<Mutex<tokio::sync::mpsc::Receiver<Vec<u8>>>>,
-    other_server_addresses: Vec<String>,
+    other_server_election_addresses: Vec<String>,
 ) {
     let listener = TcpListener::bind(&server_address)
         .await
@@ -119,11 +119,14 @@ pub async fn run_server_middleware(
         }
     });
 
+    let rng = Arc::new(Mutex::new(StdRng::seed_from_u64(process::id() as u64)));
+
     while let Ok((stream, _)) = listener.accept().await {
         let server_tx = server_tx.clone();
         let server_rx = Arc::clone(&server_rx);
         let state = Arc::clone(&state);
-        let other_server_addresses = other_server_addresses.clone();
+        let other_server_election_addresses = other_server_election_addresses.clone();
+        let rng = Arc::clone(&rng);
 
         task::spawn(async move {
             handle_connection(
@@ -131,7 +134,8 @@ pub async fn run_server_middleware(
                 server_tx,
                 server_rx,
                 state,
-                other_server_addresses,
+                other_server_election_addresses,
+                rng
             )
             .await;
         });
@@ -143,17 +147,19 @@ async fn handle_connection(
     server_tx: Sender<Vec<u8>>,
     server_rx: Arc<Mutex<tokio::sync::mpsc::Receiver<Vec<u8>>>>,
     state: Arc<Mutex<ServerState>>,
-    other_server_addresses: Vec<String>,
+    other_server_election_addresses: Vec<String>,
+    mut rng: Arc<tokio::sync::Mutex<StdRng>>,
 ) {
  //   println!("Beginning handle_connection");
-    let mut message = Vec::new();
+  //  let mut message = Vec::new();
+    let mut light_buffer = [0; 1024];
     stream
-        .read_to_end(&mut message)
+        .read(&mut light_buffer)
         .await
         .expect("Failed to read light message data from client middleware");
 
     // check the if condition only when deserialization is successful
-    if let Ok(light_message) = bincode::deserialize::<LightMessage>(&message) {
+    if let Ok(light_message) = bincode::deserialize::<LightMessage>(&light_buffer) {
         println!("Received message: {}", light_message.message);
         if light_message.message == "I want to send" {
             println!(
@@ -174,11 +180,13 @@ async fn handle_connection(
                 return;
             }
 	        //Delay before election
-            sleep(Duration::from_micros(StdRng::seed_from_u64(process::id() as u64).gen_range(0..=10_000))).await;
+            let d = Duration::from_millis(rng.lock().await.gen_range(1..=1000));
+            println!("Delaying before election {} with delay {}", process::id(), d.as_millis());
+            sleep(d).await;
             // Initiate election
             let is_elected: bool = initiate_election(
                 state.clone(),
-                other_server_addresses.clone(),
+                other_server_election_addresses.clone(),
                 light_message.client_ip.clone(),
                 light_message.request_id.clone(),
             )
@@ -195,7 +203,6 @@ async fn handle_connection(
                 "Current load is {}; handling client's request.",
                 state.lock().await.current_load()
             );
-
             // Send the server's address back to the client middleware
             stream
                 .write_all(b"self")
@@ -239,7 +246,7 @@ async fn handle_connection(
 
 async fn initiate_election(
     state: Arc<Mutex<ServerState>>,
-    other_server_addresses: Vec<String>,
+    other_server_election_addresses: Vec<String>,
     client_ip: String,
     request_id: String,
 ) -> bool {
@@ -255,7 +262,7 @@ async fn initiate_election(
     // Prepare futures for sending election messages
     let mut futures = Vec::new();
 
-    for address in other_server_addresses.iter() {
+    for address in other_server_election_addresses.iter() {
         let address = address.clone();
         let election_message = format!("ELECTION:{}:{}:{}", own_id, client_ip, request_id);
         // Create a future for each server
@@ -334,7 +341,7 @@ async fn initiate_election(
         let leader_message = format!("LEADER:{}:{}", client_ip, request_id);
         let mut leader_futures = Vec::new();
 
-        for address in other_server_addresses.iter() {
+        for address in other_server_election_addresses.iter() {
             let address = address.clone();
             let leader_message = leader_message.clone();
             let future = async move {
