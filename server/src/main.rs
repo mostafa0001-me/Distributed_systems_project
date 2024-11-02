@@ -16,7 +16,7 @@ async fn main() {
     }
 
     let server_address = args[1].clone();
-    let load_request_port: u16 = args[2].parse().expect("Invalid load request port");
+    let load_request_address: String = args[2].parse().expect("Invalid load request port");
     let other_servers: Vec<String> = args.iter().skip(3).cloned().collect();
 
     let (middleware_to_server_tx, middleware_to_server_rx) = mpsc::channel(32);
@@ -29,7 +29,7 @@ async fn main() {
     let server_middleware_handle = task::spawn(async move {
         server_middleware::run_server_middleware(
         server_address,
-        load_request_port,
+        load_request_address,
         middleware_to_server_tx,
         server_to_middleware_rx,
         other_servers

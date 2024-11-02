@@ -84,7 +84,7 @@ impl ServerState {
 
     fn clean_old_requests(&mut self) {
         let now = Instant::now();
-        let timeout = Duration::from_secs(60); // 1 minute
+        let timeout = Duration::from_secs(120); // 2 minutes
         self.handled_requests
             .retain(|_, &mut timestamp| now.duration_since(timestamp) < timeout);
     }
@@ -92,7 +92,7 @@ impl ServerState {
 
 pub async fn run_server_middleware(
     server_address: String,
-    election_port: u16,
+    election_address: String,
     server_tx: Sender<Vec<u8>>,
     server_rx: Arc<Mutex<tokio::sync::mpsc::Receiver<Vec<u8>>>>,
     other_server_election_addresses: Vec<String>,
@@ -104,9 +104,9 @@ pub async fn run_server_middleware(
 
     // Start a task to listen for election messages
     let election_listener_state = Arc::clone(&state);
-    let election_listener_address = format!("0.0.0.0:{}", election_port);
+    //let election_listener_address = format!("0.0.0.0:{}", election_port);
     task::spawn(listen_for_election_messages(
-        election_listener_address,
+        election_address,
         election_listener_state,
     ));
 
@@ -114,7 +114,7 @@ pub async fn run_server_middleware(
     let state_for_cleanup = Arc::clone(&state);
     task::spawn(async move {
         loop {
-            tokio::time::sleep(Duration::from_secs(60)).await;
+            tokio::time::sleep(Duration::from_secs(200)).await; //adjust time
             state_for_cleanup.lock().await.clean_old_requests();
         }
     });
@@ -193,7 +193,7 @@ async fn handle_connection(
             .await;
 
             if !is_elected {
-                println!("Server is not elected to handle the request.");
+                println!("Server is not elected to handle the request {}.", light_message.request_id);
                 return;
             }
 
@@ -264,7 +264,7 @@ async fn initiate_election(
 
     for address in other_server_election_addresses.iter() {
         let address = address.clone();
-        let election_message = format!("ELECTION:{}:{}:{}", own_id, client_ip, request_id);
+        let election_message = format!("ELECTION:{};{};{}", own_id, client_ip, request_id);
         // Create a future for each server
         let future = async move {
             // Attempt to connect to the server
@@ -278,7 +278,7 @@ async fn initiate_election(
                     // Set a timeout for reading response
                     let mut buffer = [0; 1024];
                     match tokio::time::timeout(
-                        std::time::Duration::from_millis(100),
+                        std::time::Duration::from_millis(1000), // timeout; maybe increase it
                         stream.read(&mut buffer),
                     )
                     .await
@@ -292,6 +292,7 @@ async fn initiate_election(
                             }
                         }
                         _ => {
+                            println!("No response or error from server {}", address);
                             // No response or error
                             None
                         }
@@ -313,9 +314,11 @@ async fn initiate_election(
     let mut should_handle_request = true;
     for response in results {
         if let Some(res) = response {
+            println!("Herrrre Received response from other servers : {}", res);
             if res == "OK" {
                 println!("Received OK from another server. Not the leader.");
                 should_handle_request = false;
+                break;
             } else if res == "ALREADY_HANDLED" {
                 println!("Request already handled by another server.");
                 should_handle_request = false;
@@ -338,7 +341,7 @@ async fn initiate_election(
             .add_request(client_ip.clone(), request_id.clone());
 
         // Send LEADER message to other servers
-        let leader_message = format!("LEADER:{}:{}", client_ip, request_id);
+        let leader_message = format!("LEADER;{};{}", client_ip, request_id);
         let mut leader_futures = Vec::new();
 
         for address in other_server_election_addresses.iter() {
@@ -376,11 +379,15 @@ async fn listen_for_election_messages(address: String, state: Arc<Mutex<ServerSt
             let message = String::from_utf8_lossy(&buffer[..bytes_read]);
             if message.starts_with("ELECTION:") {
                 // Extract sender_id, client_ip, request_id
-                let parts: Vec<&str> = message["ELECTION:".len()..].trim().split(':').collect();
+                let parts: Vec<&str> = message["ELECTION:".len()..].trim().split(';').collect();
+                println!("Received election message: {}", message);
+                print!("parts: {}", parts.len());
                 if parts.len() == 3 {
                     let sender_id: f32 = parts[0].parse().unwrap_or(f32::MAX);
                     let client_ip = parts[1].to_string();
                     let request_id = parts[2].to_string();
+                    //print a message with the sender_id, client_ip and request_id
+                    println!("Received election message from ID {}. Client IP: {}. Request ID: {}.", sender_id, client_ip, request_id);
 
                     // Check if we have already handled this request
                     if state
@@ -415,10 +422,12 @@ async fn listen_for_election_messages(address: String, state: Arc<Mutex<ServerSt
                         }
                     }
                     // If our ID is higher, do not respond
+                }else{
+                    println!("Invalid election message format");
                 }
             } else if message.starts_with("LEADER:") {
                 // Extract client_ip and request_id
-                let parts: Vec<&str> = message["LEADER:".len()..].trim().split(':').collect();
+                let parts: Vec<&str> = message["LEADER:".len()..].trim().split(';').collect();
                 if parts.len() == 2 {
                     let client_ip = parts[0].to_string();
                     let request_id = parts[1].to_string();
