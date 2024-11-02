@@ -52,8 +52,12 @@ struct ServerState {
 
 impl ServerState {
     fn new() -> Self {
+        // Initialize the load with a random number between 1 and 50
+        let mut rng = rand::thread_rng();
+        let initial_load = rng.gen_range(1..=10); // Random load between 1 and 50
+
         ServerState {
-            load: 0,
+            load: initial_load,
             handled_requests: HashMap::new(),
         }
     }
@@ -89,7 +93,6 @@ impl ServerState {
             .retain(|_, &mut timestamp| now.duration_since(timestamp) < timeout);
     }
 }
-
 pub async fn run_server_middleware(
     server_address: String,
     election_address: String,
@@ -180,7 +183,7 @@ async fn handle_connection(
                 return;
             }
 	        //Delay before election
-            let d = Duration::from_millis(rng.lock().await.gen_range(1..=1000));
+            let d = Duration::from_millis(rng.lock().await.gen_range(500..=10000));
             println!("Delaying before election {} with delay {}", process::id(), d.as_millis());
             sleep(d).await;
             // Initiate election
@@ -199,10 +202,10 @@ async fn handle_connection(
 
             // Increment load
             state.lock().await.increment_load();
-            println!(
-                "Current load is {}; handling client's request.",
-                state.lock().await.current_load()
-            );
+            //println!(
+            //    "Current load is {}; handling client's request.",
+            //    state.lock().await.current_load()
+            //);
             // Send the server's address back to the client middleware
             stream
                 .write_all(b"self")
@@ -257,7 +260,7 @@ async fn initiate_election(
     server_id.calculate_id(load, &mut system);
     let own_id = server_id.get_id();
 
-    println!("Initiating election with ID: {}", own_id);
+    println!("Initiating election with ID: {} for request: {}", own_id, request_id);
 
     // Prepare futures for sending election messages
     let mut futures = Vec::new();
@@ -316,11 +319,11 @@ async fn initiate_election(
         if let Some(res) = response {
             println!("Herrrre Received response from other servers : {}", res);
             if res == "OK" {
-                println!("Received OK from another server. Not the leader.");
+                //println!("Received OK from another server. Not the leader.");
                 should_handle_request = false;
                 break;
             } else if res == "ALREADY_HANDLED" {
-                println!("Request already handled by another server.");
+                //println!("Request already handled by another server.");
                 should_handle_request = false;
                 break;
             }
@@ -341,7 +344,7 @@ async fn initiate_election(
             .add_request(client_ip.clone(), request_id.clone());
 
         // Send LEADER message to other servers
-        let leader_message = format!("LEADER;{};{}", client_ip, request_id);
+        let leader_message = format!("LEADER:{}:{}", client_ip, request_id);
         let mut leader_futures = Vec::new();
 
         for address in other_server_election_addresses.iter() {
@@ -380,14 +383,14 @@ async fn listen_for_election_messages(address: String, state: Arc<Mutex<ServerSt
             if message.starts_with("ELECTION:") {
                 // Extract sender_id, client_ip, request_id
                 let parts: Vec<&str> = message["ELECTION:".len()..].trim().split(';').collect();
-                println!("Received election message: {}", message);
+                //println!("Received election message: {}", message);
                 print!("parts: {}", parts.len());
                 if parts.len() == 3 {
                     let sender_id: f32 = parts[0].parse().unwrap_or(f32::MAX);
                     let client_ip = parts[1].to_string();
                     let request_id = parts[2].to_string();
                     //print a message with the sender_id, client_ip and request_id
-                    println!("Received election message from ID {}. Client IP: {}. Request ID: {}.", sender_id, client_ip, request_id);
+                    //println!("Received election message from ID {}. Client IP: {}. Request ID: {}.", sender_id, client_ip, request_id);
 
                     // Check if we have already handled this request
                     if state
@@ -410,8 +413,8 @@ async fn listen_for_election_messages(address: String, state: Arc<Mutex<ServerSt
                     let own_id = server_id.get_id();
 
                     println!(
-                        "Received election message from ID {}. Our ID is {}.",
-                        sender_id, own_id
+                        "Received election message from ID {}. Our ID is {}. Request ID is {}.",
+                        sender_id, own_id, request_id
                     );
 
                     // Compare IDs
