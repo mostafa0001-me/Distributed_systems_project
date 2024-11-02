@@ -132,8 +132,9 @@ pub async fn run_server_middleware(
 
     let election_listener_state = Arc::clone(&state);
     let election_listener_token = election_cancel_token.clone();
+    let election_listener_address = election_address.clone();
     task::spawn(listen_for_election_messages(
-        election_address,
+        election_listener_address,
         election_listener_state,
         Arc::clone(&election_state),
         election_listener_token,
@@ -157,12 +158,14 @@ pub async fn run_server_middleware(
         let rng = Arc::clone(&rng);
         let election_cancel_token = election_cancel_token.clone();
 
+        let election_listener_address2 = election_address.clone();
         task::spawn(async move {
             handle_connection(
                 stream,
                 server_tx,
                 server_rx,
                 state,
+                election_listener_address2,
                 other_server_election_addresses,
                 rng,
                 election_cancel_token,
@@ -177,6 +180,7 @@ async fn handle_connection(
     server_tx: Sender<Vec<u8>>,
     server_rx: Arc<Mutex<tokio::sync::mpsc::Receiver<Vec<u8>>>>,
     state: Arc<Mutex<ServerState>>,
+    my_election_address: String,
     other_server_election_addresses: Vec<String>,
     rng: Arc<tokio::sync::Mutex<StdRng>>,
     cancel_token: CancellationToken,
@@ -208,6 +212,7 @@ async fn handle_connection(
             let is_elected = tokio::select! {
                 result = initiate_election(
                     state.clone(),
+                    my_election_address.clone(),
                     other_server_election_addresses.clone(),
                     light_message.client_ip.clone(),
                     light_message.request_id.clone(),
@@ -247,6 +252,7 @@ async fn handle_connection(
 
 async fn initiate_election(
     state: Arc<Mutex<ServerState>>,
+    my_election_address: String,
     other_server_election_addresses: Vec<String>,
     client_ip: String,
     request_id: String,
@@ -357,15 +363,13 @@ async fn listen_for_election_messages(
     election_state: Arc<Mutex<ElectionState>>,
     cancel_token: CancellationToken,
 ) {
-    let listener = TcpListener::bind(address)
+    let listener = TcpListener::bind(address.clone())
         .await
         .expect("Failed to bind election listener address");
-
     while let Ok((mut stream, _)) = listener.accept().await {
         let mut buffer = [0; 1024];
         if let Ok(bytes_read) = stream.read(&mut buffer).await {
             let message = String::from_utf8_lossy(&buffer[..bytes_read]);
-
             if message.starts_with("ELECTION:") {
                 let parts: Vec<&str> = message["ELECTION:".len()..].trim().split(';').collect();
                 if parts.len() == 4 {
@@ -373,7 +377,6 @@ async fn listen_for_election_messages(
                     let client_ip = parts[1].to_string();
                     let request_id = parts[2].to_string();
                     let sender_election_address = parts[3].to_string();
-
                     if state.lock().await.has_request(&client_ip, &request_id) {
                         if let Err(e) = stream.write_all(b"ALREADY_HANDLED").await {
                             println!("Failed to send ALREADY_HANDLED to election message: {}", e);
@@ -382,15 +385,13 @@ async fn listen_for_election_messages(
                     }
 
                     if election_state.lock().await.is_election_ongoing(&request_id) {
-                        println!("Election already ongoing for request {}. Ignoring election message.", request_id);
+                        println!(
+                            "Election already ongoing for request {}. Ignoring election message.",
+                            request_id
+                        );
                         continue;
                     }
-
                     election_state.lock().await.start_election(&request_id);
-                } else {
-                    println!("Invalid election message format");
-                }
-                    // Calculate our own ID
                     let mut system = sysinfo::System::new_all();
                     let load = state.lock().await.current_load();
                     let mut server_id = ServerId::new();
@@ -403,15 +404,18 @@ async fn listen_for_election_messages(
                     );
 
                     // Compare IDs
-                    println!("Comparing server IPS. Listener: {} Sender: {}", address, sender_election_address);
-                    if own_id < sender_id || (own_id == sender_id && address < sender_election_address) {
+                    println!(
+                        "Comparing server IPS. Listener: {} Sender: {}",
+                        address, sender_election_address
+                    );
+                    if own_id < sender_id  || (own_id == sender_id && address < sender_election_address)
+                    {
                         // Our ID is lower, reply "OK"
                         if let Err(e) = stream.write_all(b"OK").await {
                             println!("Failed to send OK to election message: {}", e);
                         }
                     }
-                    // If our ID is higher, do not respond
-                }else{
+                } else {
                     println!("Invalid election message format");
                 }
             } else if message.starts_with("LEADER:") {
@@ -420,9 +424,11 @@ async fn listen_for_election_messages(
                     let client_ip = parts[0].to_string();
                     let request_id = parts[1].to_string();
 
-                    state.lock().await.add_request(client_ip.clone(), request_id.clone());
+                    state
+                        .lock()
+                        .await
+                        .add_request(client_ip.clone(), request_id.clone());
                     cancel_token.cancel();
-
                     println!(
                         "Added request {} from client {} to handled requests and stopped ongoing election.",
                         request_id, client_ip
@@ -433,4 +439,3 @@ async fn listen_for_election_messages(
         }
     }
 }
-
