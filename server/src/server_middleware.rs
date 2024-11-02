@@ -263,7 +263,7 @@ async fn initiate_election(
 
     for address in other_server_election_addresses.iter() {
         let address = address.clone();
-        let election_message = format!("ELECTION:{};{};{}", own_id, client_ip, request_id);
+        let election_message = format!("ELECTION:{};{};{};{}", own_id, client_ip, request_id, my_election_address);
         let future = async move {
             match TcpStream::connect(&address).await {
                 Ok(mut stream) => {
@@ -368,10 +368,11 @@ async fn listen_for_election_messages(
 
             if message.starts_with("ELECTION:") {
                 let parts: Vec<&str> = message["ELECTION:".len()..].trim().split(';').collect();
-                if parts.len() == 3 {
+                if parts.len() == 4 {
                     let sender_id: f32 = parts[0].parse().unwrap_or(f32::MAX);
                     let client_ip = parts[1].to_string();
                     let request_id = parts[2].to_string();
+                    let sender_election_address = parts[3].to_string();
 
                     if state.lock().await.has_request(&client_ip, &request_id) {
                         if let Err(e) = stream.write_all(b"ALREADY_HANDLED").await {
@@ -389,7 +390,30 @@ async fn listen_for_election_messages(
                 } else {
                     println!("Invalid election message format");
                 }
+                    // Calculate our own ID
+                    let mut system = sysinfo::System::new_all();
+                    let load = state.lock().await.current_load();
+                    let mut server_id = ServerId::new();
+                    server_id.calculate_id(load, &mut system);
+                    let own_id = server_id.get_id();
 
+                    println!(
+                        "Received election message from ID {}. Our ID is {}.",
+                        sender_id, own_id
+                    );
+
+                    // Compare IDs
+                    println!("Comparing server IPS. Listener: {} Sender: {}", address, sender_election_address);
+                    if own_id < sender_id || (own_id == sender_id && address < sender_election_address) {
+                        // Our ID is lower, reply "OK"
+                        if let Err(e) = stream.write_all(b"OK").await {
+                            println!("Failed to send OK to election message: {}", e);
+                        }
+                    }
+                    // If our ID is higher, do not respond
+                }else{
+                    println!("Invalid election message format");
+                }
             } else if message.starts_with("LEADER:") {
                 let parts: Vec<&str> = message["LEADER:".len()..].trim().split(';').collect();
                 if parts.len() == 2 {
