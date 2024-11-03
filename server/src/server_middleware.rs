@@ -127,6 +127,76 @@ pub async fn run_server_middleware(
         .await
         .expect("Could not bind to server address");
     let state = Arc::new(Mutex::new(ServerState::new()));
+
+    // Start a task to listen for election messages
+    let election_listener_state = Arc::clone(&state);
+    let election_listener_address = election_address.clone();
+    task::spawn(listen_for_election_messages(
+        election_listener_address,
+        election_listener_state,
+    ));
+
+    // Start a task to clean old requests periodically
+    let state_for_cleanup = Arc::clone(&state);
+    task::spawn(async move {
+        loop {
+            sleep(Duration::from_secs(200)).await; // Adjust time as needed
+            state_for_cleanup.lock().await.clean_old_requests();
+        }
+    });
+
+    // Task to simulate server downtime
+    task::spawn(async move {
+        let mut rng = thread_rng();
+        loop {
+            // Wait for a random period before going down (e.g., 10-30 seconds)
+            let uptime = rng.gen_range(10..=500);
+            sleep(Duration::from_secs(uptime)).await;
+
+            // Simulate downtime
+            let downtime = rng.gen_range(20..=30); // Random downtime duration (e.g., 5-15 seconds)
+            println!(
+                "Server going down for {} seconds for maintenance or downtime simulation.",
+                downtime
+            );
+            sleep(Duration::from_secs(downtime)).await;
+            println!("Server is back online.");
+        }
+    });
+
+    // Main loop to accept connections
+    while let Ok((stream, _)) = listener.accept().await {
+        let server_tx = server_tx.clone();
+        let server_rx = Arc::clone(&server_rx);
+        let state = Arc::clone(&state);
+        let other_server_election_addresses = other_server_election_addresses.clone();
+        let election_listener_address2 = election_address.clone();
+
+        task::spawn(async move {
+            handle_connection(
+                stream,
+                server_tx,
+                server_rx,
+                state,
+                election_listener_address2,
+                other_server_election_addresses,
+            )
+            .await;
+        });
+    }
+}
+
+pub async fn run_server_middleware_t(
+    server_address: String,
+    election_address: String,
+    server_tx: Sender<Vec<u8>>,
+    server_rx: Arc<Mutex<tokio::sync::mpsc::Receiver<Vec<u8>>>>,
+    other_server_election_addresses: Vec<String>,
+) {
+    let listener = TcpListener::bind(&server_address)
+        .await
+        .expect("Could not bind to server address");
+    let state = Arc::new(Mutex::new(ServerState::new()));
     let election_state = Arc::new(Mutex::new(ElectionState::new()));
     let election_cancel_token = CancellationToken::new();
 
