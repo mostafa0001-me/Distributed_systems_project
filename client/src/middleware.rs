@@ -4,6 +4,11 @@ use tokio::io::{AsyncWriteExt, AsyncReadExt};
 use tokio::sync::mpsc::{Receiver, Sender};
 use crate::client::ImageRequest;
 use bincode;
+use rand::{seq::SliceRandom, Rng};
+use rand::rngs::StdRng;
+use rand::SeedableRng;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 /// Main function to handle image data transmission through an elected server
 pub async fn run_middleware(
@@ -59,12 +64,12 @@ pub async fn run_middleware(
 }
 
 
-async fn find_available_server(server_ips: &[String]) -> Option<TcpStream> {
-    // Create a random number generator
-    let mut rng = thread_rng();
+async fn find_available_server(server_ips: &[String], rng: Arc<Mutex<StdRng>>) -> Option<TcpStream> {
+    // Lock the RNG for this async context
+    let mut rng = rng.lock().await;
 
     // Choose a random server IP from the list
-    if let Some(random_ip) = server_ips.choose(&mut rng) {
+    if let Some(random_ip) = server_ips.choose(&mut *rng) {
         println!("Client Middleware: Chosen server IP is {}", random_ip);
 
         // Try to connect to the chosen server
