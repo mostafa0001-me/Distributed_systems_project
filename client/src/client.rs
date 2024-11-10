@@ -42,7 +42,7 @@ pub async fn run_client(tx: Sender<ImageRequest>, mut rx: Receiver<Vec<u8>>, cli
             if let Err(e) = tx_clone.send(request).await {
                 eprintln!("Client: Failed to send image to middleware: {}", e);
             } else {
-                println!("Client {}: Image data with request ID {} sent to middleware.", client_ip, request_id);
+                println!("Client: Image data with request ID {} sent to middleware.", request_id);
             }
         });
 
