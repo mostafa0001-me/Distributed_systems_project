@@ -20,6 +20,13 @@ pub struct LightMessage {
     pub message: String,
 }
 
+// Assuming the response now also contains the request ID
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ImageResponse {
+    pub request_id: String,
+    pub encrypted_image_data: Vec<u8>,
+}
+
 // A structure to hold the server's id, a weighted sum of its load and cpu utilization.
 struct ServerId {
     id: u32,
@@ -261,9 +268,23 @@ async fn handle_connection(
                     .expect("Failed to receive encrypted data from server")
             };
 
+            // Serialize the LightRequest
+            let img_response = ImageResponse {
+                request_id: light_message.request_id.clone(),
+                encrypted_image_data: encrypted_data,
+            };
+
+            let serialized_image_response = match bincode::serialize(&img_response) {
+                Ok(data) => data,
+                Err(e) => {
+                    eprintln!("Failed to serialize ImageResponse {}: {}", img_response.request_id, e);
+                    return;
+                }
+            };
+
             // Send encrypted data back to client middleware
             stream
-                .write_all(&encrypted_data)
+                .write_all(&serialized_image_response)
                 .await
                 .expect("Failed to send encrypted data to client middleware");
 

@@ -3,6 +3,7 @@ use futures::future::join_all;
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
 use tokio::sync::mpsc::{Receiver, Sender};
 use crate::client::ImageRequest;
+use crate::client::ImageResponse;
 use bincode;
 use serde::{Serialize, Deserialize};
 
@@ -16,7 +17,7 @@ pub struct LightRequest {
 /// Main function to handle image data transmission through an elected server
 pub async fn run_middleware(
     mut rx: Receiver<ImageRequest>, 
-    tx: Sender<Vec<u8>>, 
+    tx: Sender<ImageResponse>, 
     server_ips: Vec<String>
 ) {
     while let Some(image_request) = rx.recv().await {
@@ -28,11 +29,11 @@ pub async fn run_middleware(
         let request_id = image_request.request_id.clone();
         tokio::spawn(async move {
             // Attempt to connect to an available server
-            if let Some(mut server_stream) = find_available_server(&server_ips_clone, &client_ip, &request_id).await {
+            if let Some(mut server_stream) = find_available_server_t(&server_ips_clone, &client_ip, &request_id).await {
                 // Print IP of server
                 println!(
-                    "Client Middleware: Client Connected to server {} for request number {}.",
-                    server_stream.peer_addr().unwrap(), request_id
+                    "Client Middleware: Client Connected {} to server {} for request number {}.",
+                    client_ip, server_stream.peer_addr().unwrap(), request_id
                 );
                 
                 // Send the serialized data to the server
@@ -54,12 +55,18 @@ pub async fn run_middleware(
                     return;
                 }
 
-                // Send the response back to the client
-                if let Err(e) = tx_clone.send(response).await {
-                    eprintln!("Client Middleware: Failed to send response to client: {}", e);
+                
+                if let Ok(image_response) = bincode::deserialize::<ImageResponse>(&response) {
+                    println!("Client Middleware: received response id {}", image_response.request_id);
+                    // Send the response back to the client
+                    if let Err(e) = tx_clone.send(image_response).await {
+                        eprintln!("Client Middleware: Failed to send response to client: {}", e);
+                    }
                 }
+
+
             } else {
-                eprintln!("Client Middleware: No servers are available to handle the request {}.", request_id);
+                eprintln!("Client Middleware: No servers are available to handle the request.");
             }
         });
     }
@@ -109,7 +116,7 @@ async fn find_available_server(
                 if let Ok(bytes_read) = stream.read(&mut ack_buffer).await {
                     let response = String::from_utf8_lossy(&ack_buffer[..bytes_read]).to_string();
                     if !response.is_empty() {
-                        println!("Client Middleware: Server at {} accepted the request {} with response {}", ip, request_id, response);
+                        println!("Client Middleware: Server at {} accepted the request with response {}", ip, response);
                         return Some(stream);
                     }
                 }
@@ -172,7 +179,6 @@ async fn find_available_server_t(
                 }  
             }  
         }  
-    }
-//}  
+    } 
     None  
 }  

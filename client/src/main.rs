@@ -4,6 +4,7 @@ pub mod middleware;
 use tokio::sync::mpsc;
 use std::env;
 use client::ImageRequest;
+use client::ImageResponse;
 
 #[tokio::main]
 async fn main() {
@@ -18,7 +19,7 @@ async fn main() {
 
     // Create channels for communication between client and middleware
     let (client_to_middleware_tx, client_to_middleware_rx) = mpsc::channel::<ImageRequest>(32); // Buffer size of 32
-    let (middleware_to_client_tx, middleware_to_client_rx) = mpsc::channel(32);
+    let (middleware_to_client_tx, middleware_to_client_rx) = mpsc::channel::<ImageResponse>(32);
 //:Sender<Vec
     // Spawn the middleware task
     let middleware_handle = tokio::spawn(async move {
