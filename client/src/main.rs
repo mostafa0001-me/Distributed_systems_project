@@ -36,7 +36,7 @@ async fn main() {
             client_to_middleware_tx,
             middleware_to_client_rx, 
             client_ip,
-            10
+            40    
         ).await
     });
 

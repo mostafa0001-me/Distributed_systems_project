@@ -52,9 +52,9 @@ impl ServerId {
         }
         cpu_utilization /= system.cpus().len() as f32;
         cpu_utilization *= 100 as f32; //make it bigger for easier comparison
-        self.id = cpu_utilization as u32;
+        //self.id = cpu_utilization as u32;
        // self.id = 0.2f32 * load as f32 + 0.8f32 * cpu_utilization;
-        //self.id = load as f32;
+        self.id = load;
     }
 
     fn get_id(&self) -> u32 {
@@ -215,7 +215,7 @@ async fn handle_connection(
                 return;
             }
 	        // //Delay before election
-            let d = Duration::from_millis(rng.lock().await.gen_range(100..=500));
+            let d = Duration::from_millis(rng.lock().await.gen_range(10..=100));
             println!("Delaying before election {} with delay {}", process::id(), d.as_millis());
            // tokio::time::sleep(d).await;
             thread::sleep(d);
@@ -342,7 +342,7 @@ async fn initiate_election(
                     // Set a timeout for reading response
                     let mut buffer = [0; 1024];
                     match tokio::time::timeout(
-                        std::time::Duration::from_millis(4000), // timeout; maybe increase it
+                        std::time::Duration::from_millis(400), // timeout; maybe increase it
                         stream.read(&mut buffer),
                     )
                     .await
@@ -391,9 +391,6 @@ async fn initiate_election(
         }
     }
 
-    //wait before sending leader message
-    thread::sleep( Duration::from_millis(100)); 
-
     if should_handle_request {
         if state
         .lock()
@@ -419,7 +416,7 @@ async fn initiate_election(
             .await
             .add_request_handled(client_ip.clone(), request_id.clone());
 
-        thread::sleep( Duration::from_millis(200)); 
+        thread::sleep( Duration::from_millis(50)); 
         // Send LEADER message to other servers
         let leader_message = format!("LEADER:{};{};{}", client_ip, request_id, my_election_address);
         let mut leader_futures = Vec::new();
@@ -470,7 +467,7 @@ async fn listen_for_election_messages(address: String, state: Arc<Mutex<ServerSt
                     //print a message with the sender_id, client_ip and request_id
                     println!("Received election message from server {} with ID {}. Client IP: {}. Request ID: {}.", sender_election_address, sender_id, client_ip, request_id);
 
-                    thread::sleep( Duration::from_millis(200)); 
+                    thread::sleep( Duration::from_millis(50)); 
                     // Check if we have already handled this request
                     if state
                         .lock()

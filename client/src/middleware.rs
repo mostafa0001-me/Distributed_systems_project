@@ -30,10 +30,10 @@ pub async fn run_middleware(
         tokio::spawn(async move {
             // Attempt to connect to an available server
             if let Some(mut server_stream) = find_available_server_t(&server_ips_clone, &client_ip, &request_id).await {
-                // Print IP of server
-                println!(
-                    "Client Middleware: Client Connected {} to server {} for request number {}.",
-                    client_ip, server_stream.peer_addr().unwrap(), request_id
+                 // Print IP of server
+                 println!(
+                    "Client Middleware: Client Connected to server {} for request number {}.",
+                    server_stream.peer_addr().unwrap(), request_id
                 );
                 
                 // Send the serialized data to the server
@@ -42,11 +42,12 @@ pub async fn run_middleware(
                     return;
                 }
 
-                // Signal the server to start processing
-                if let Err(e) = server_stream.shutdown().await {
+                 // Signal the server to start processing
+                 if let Err(e) = server_stream.shutdown().await {
                     eprintln!("Client Middleware: Failed to shutdown write stream: {}", e);
                     return;
                 }
+
 
                 // Receive the encrypted response from the server
                 let mut response = Vec::new();
@@ -116,7 +117,7 @@ async fn find_available_server(
                 if let Ok(bytes_read) = stream.read(&mut ack_buffer).await {
                     let response = String::from_utf8_lossy(&ack_buffer[..bytes_read]).to_string();
                     if !response.is_empty() {
-                        println!("Client Middleware: Server at {} accepted the request with response {}", ip, response);
+                        println!("Client Middleware: Server at {} accepted the request {} with response {}", ip, request_id, response);
                         return Some(stream);
                     }
                 }
@@ -131,7 +132,6 @@ async fn find_available_server(
     // Return the first successful connection
     results.into_iter().flatten().next()
 }
-
 
 async fn find_available_server_t(  
     server_ips: &[String],   
@@ -179,6 +179,7 @@ async fn find_available_server_t(
                 }  
             }  
         }  
-    } 
+    }
+//}  
     None  
 }  
