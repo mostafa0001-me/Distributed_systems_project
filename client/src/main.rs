@@ -45,14 +45,13 @@ async fn main() {
     let client_handle = tokio::spawn(async move {
         client::run_client(
             client_to_middleware_tx,
-            middleware_to_client_rx, 
+            middleware_to_client_rx,
             client_ip2,
-            1
         ).await
     });
 
     // Wait for all tasks to finish
-    let (middleware_result, client_server_result, client_result) = 
+    let (middleware_result, client_server_result, client_result) =
         tokio::join!(middleware_handle, client_server_handle, client_handle);
 
     // Handle any errors
