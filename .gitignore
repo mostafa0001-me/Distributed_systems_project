@@ -1,2 +1,5 @@
 ./server/*.png
 ./client/encrypted_*.png
+./debug
+./client/target
+./server/target
