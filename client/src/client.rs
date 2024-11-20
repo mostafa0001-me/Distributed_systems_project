@@ -17,9 +17,27 @@ use steganography::decoder::Decoder;
 use std::sync::Arc;
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct ImageResponse {
-    pub request_id: String,
-    pub encrypted_image_data: Vec<u8>,
+pub enum Request {
+    SignUp(SignUpRequest),
+    SignIn(SignInRequest),
+    SignOut(SignOutRequest),
+    ImageRequest(ImageRequest),
+    ListContents,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SignUpRequest {
+    pub client_ip: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SignInRequest {
+    pub client_id: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SignOutRequest {
+    pub client_id: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -27,6 +45,36 @@ pub struct ImageRequest {
     pub client_ip: String,
     pub request_id: String,
     pub image_data: Vec<u8>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub enum Response {
+    SignUp(SignUpResponse),
+    SignIn(SignInResponse),
+    SignOut(SignOutResponse),
+    ImageResponse(ImageResponse),
+    Error {message: String},
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SignUpResponse {
+    pub client_id: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SignInResponse {
+    pub client_id: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SignOutResponse {
+    pub client_id: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ImageResponse {
+    pub request_id: String,
+    pub encrypted_image_data: Vec<u8>,
 }
 
 // HashMap to store timestamps for each request using Tokio's Mutex
@@ -66,7 +114,6 @@ pub struct SharedImageInfo {
     pub image_path: String,
     pub shared_by: String,
 }
-
 pub struct PendingRequest {
     pub request: ClientToClientRequest,
     pub requester_ip: String,
@@ -100,20 +147,21 @@ async fn read_length_prefixed_message(stream: &mut TcpStream) -> tokio::io::Resu
 }
 
 pub async fn run_client(
-    tx: mpsc::Sender<ImageRequest>,
-    mut rx: mpsc::Receiver<ImageResponse>,
+    tx: mpsc::Sender<Request>,
+    mut rx: mpsc::Receiver<Response>,
     client_ip: String,
 ) {
     loop {
         println!("Please choose an option:");
-        println!("1. Sign in/out");
-        println!("2. Request DOS");
-        println!("3. Encrypt an image from the server");
-        println!("4. Request an image from another client");
-        println!("5. Edit access rights of a client");
-        println!("6. Exit");
-        println!("7. View shared images");
-        println!("8. View pending requests");
+        println!("1. Sign up");
+        println!("2. Sign in");
+        println!("3. Request DOS");
+        println!("4. Encrypt an image from the server");
+        println!("5. Request an image from another client");
+        println!("6. Edit access rights of a client");
+        println!("7. Exit");
+        println!("8. View shared images");
+        println!("9. View pending requests");
 
         let mut choice = String::new();
         io::stdin()
@@ -123,42 +171,41 @@ pub async fn run_client(
 
         match choice {
             "1" => {
-                // Placeholder for Sign in/out functionality
-                println!("Sign in/out functionality not yet implemented.");
+                sign_up(tx.clone(), client_ip.clone()).await;
+                receive_response_from_middleware(&mut rx, client_ip.clone()).await;
             }
             "2" => {
-                // Placeholder for Request DOS functionality
-                println!("Request DOS functionality not yet implemented.");
-            }
-            "3" => {
-                // Encrypt an image from the server
-                encrypt_image_from_server(tx.clone(), client_ip.clone()).await;
-
-                // Now wait for the response
-                if let Some(response) = rx.recv().await {
-                    handle_image_response(response, client_ip.clone()).await;
-                } else {
-                    eprintln!("Did not receive a response from the middleware.");
+                match read_id_from_file("client_ids.txt").await {
+                    Ok(client_id) => println!("Read client ID: {}", client_id),
+                    Err(e) => eprintln!("Failed to read client ID: {}", e),
                 }
             }
+            "3" => {
+                // receive_response_from_middleware(&mut rx, client_ip.clone()).await;
+            }
             "4" => {
+                // Encrypt an image from the server
+                encrypt_image_from_server(tx.clone(), client_ip.clone()).await;
+                receive_response_from_middleware(&mut rx, client_ip.clone()).await;
+            }
+            "5" => {
                 // Request an image from another client
                 request_image_from_client().await;
             }
-            "5" => {
+            "6" => {
                 // Placeholder for Edit access rights of a client
                 println!("Edit access rights functionality not yet implemented.");
             }
-            "6" => {
+            "7" => {
                 // Exit the loop
                 println!("Exiting.");
                 break;
             }
-            "7" => {
+            "8" => {
                 // View shared images
                 view_shared_images().await;
             }
-            "8" => {
+            "9" => {
                 // View pending requests
                 handle_pending_requests(client_ip.clone()).await;
             }
@@ -169,8 +216,80 @@ pub async fn run_client(
     }
 }
 
+async fn sign_up(
+    tx:  mpsc::Sender<Request>,
+    client_ip: String,
+) {
+    let request = Request::SignUp(SignUpRequest{
+        client_ip: client_ip.clone(),
+    });
+    send_request_to_middleware(tx, request).await;
+}
+
+async fn send_request_to_middleware(
+    tx:  mpsc::Sender<Request>,
+    request: Request,
+) {
+    // Send the request to the middleware via tx
+    if let Err(e) = tx.send(request).await {
+        eprintln!(
+            "Client: Failed to send sign up request to middleware: {}",
+            e
+        );
+    } else {
+        println!(
+            "Request sent to middleware",
+        );
+    }
+}
+async fn read_id_from_file(file_path: &str) -> io::Result<String> {
+    // Read the file's content into a String
+    let content = fs::read_to_string(file_path).await?;
+    Ok(content.trim().to_string()) // Trim to remove any extra whitespace or newline
+}
+
+async fn receive_response_from_middleware(
+    rx: &mut mpsc::Receiver<Response>,
+    client_ip: String,
+) {
+    // Receive response from the middleware via rx
+    if let Some(response) = rx.recv().await {
+        match response {
+            Response::SignUp(res) => {
+                handle_sign_up_response(res).await;
+            },
+            Response::ImageResponse(res) => {
+                handle_image_response(res, client_ip).await;
+            },
+            _ => println!("Unexpected response."),
+        }
+    } else {
+        eprintln!("Did not receive a response from the middleware.");
+    }
+}
+
+async fn handle_sign_up_response(response: SignUpResponse) {
+    println!("Client registered with ID: {}", response.client_id);
+
+    // Call the append_to_file function
+    if let Err(e) = append_to_file("client_id.txt", &response.client_id).await {
+        eprintln!("Failed to write to file: {}", e);
+    }
+}
+
+async fn append_to_file(file_path: &str, content: &str) -> tokio::io::Result<()> {
+    let mut file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(file_path)
+        .await?;
+
+    file.write_all(format!("{}\n", content).as_bytes()).await?;
+    Ok(())
+}
+
 async fn encrypt_image_from_server(
-    tx: mpsc::Sender<ImageRequest>,
+    tx: mpsc::Sender<Request>,
     client_ip: String,
 ) {
     // Create the "my_images" directory if it doesn't exist
@@ -213,7 +332,7 @@ async fn encrypt_image_from_server(
     }
 
     // Send the image request
-    if let Err(e) = tx.send(request).await {
+    if let Err(e) = tx.send(Request::ImageRequest(request)).await {
         eprintln!(
             "Client: Failed to send image to middleware (Request ID: {}): {}",
             request_id, e
@@ -727,7 +846,6 @@ pub async fn run_client_server(client_ip: String) {
     let listener = TcpListener::bind(client_ip.clone())
         .await
         .expect("Failed to bind to port");
-
     println!("Client server running on {}", client_ip);
 
     loop {

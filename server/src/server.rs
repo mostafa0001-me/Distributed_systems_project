@@ -53,3 +53,4 @@ fn embed_image_buffer_in_default(default_img: DynamicImage, real_image_buffer: &
     let encoded_img = encoder.encode_alpha();
     DynamicImage::ImageRgba8(encoded_img)
 }
+

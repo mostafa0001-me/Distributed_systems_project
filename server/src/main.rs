@@ -1,6 +1,7 @@
 pub mod server_middleware;
 pub mod server;
 
+use server_middleware::DoS;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task;
 use std::env;
@@ -24,7 +25,6 @@ async fn main() {
 
     // Wrapping the receiver with Arc and Mutex to match expected types in server_middleware
     let server_to_middleware_rx = Arc::new(Mutex::new(server_to_middleware_rx));
-
     // Start the server middleware
     let server_middleware_handle = task::spawn(async move {
         server_middleware::run_server_middleware(
@@ -32,7 +32,7 @@ async fn main() {
         load_request_address,
         middleware_to_server_tx,
         server_to_middleware_rx,
-        other_servers
+        other_servers, 
         ).await;
     });
 

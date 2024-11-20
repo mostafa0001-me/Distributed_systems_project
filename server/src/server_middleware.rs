@@ -2,7 +2,6 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc::Sender, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::task;
-use std::sync::Arc;
 use serde::{Serialize, Deserialize};
 use bincode;
 use futures::future::join_all;
@@ -10,8 +9,63 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant}; 
 use sysinfo::{System, RefreshKind, CpuRefreshKind};
 use rand::{Rng, rngs::StdRng, SeedableRng};
-use std::process;
+use std::{any, process};
 use std::thread;
+use std::sync::Arc;
+use serde_json;
+use uuid;
+use std::fs::{File, OpenOptions};
+use std::io::{Write, BufRead, BufReader};
+
+/// Struct representing a client in the system.
+#[derive(Serialize, Deserialize, Debug)]
+struct Client {
+    client_id: String,
+    ip: String,
+    online: bool,
+    images: Vec<Image>, // Images owned by the client
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub enum Request {
+    SignUp(SignUpRequest),
+    SignIn(SignInRequest),
+    SignOut(SignOutRequest),
+    ImageRequest(ImageRequest),
+    ListContents,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SignUpRequest {
+    pub client_ip: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SignInRequest {
+    pub client_id: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SignOutRequest {
+    pub client_id: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ImageRequest {
+    pub client_ip: String,
+    pub request_id: String,
+    pub image_data: Vec<u8>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub enum Response {
+    SignUp {client_id: String},
+    SignIn {success: bool},
+    SignOut {success: bool},
+    ImageResponse(ImageResponse),
+    List {clients: Vec<String>},
+    Error {message: String},
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct LightMessage {
@@ -67,7 +121,6 @@ struct ServerState {
     load: u32,
     handled_requests: HashMap<(String, String), Instant>,
     requests_received: HashMap<(String, String), u32>, // request ID to load
-
 }
 
 impl ServerState {
@@ -157,9 +210,10 @@ pub async fn run_server_middleware(
         let server_rx = Arc::clone(&server_rx);
         let state = Arc::clone(&state);
         let other_server_election_addresses = other_server_election_addresses.clone();
-       let rng = Arc::clone(&rng);
+        let rng = Arc::clone(&rng);
 
         let election_listener_address2 = election_address.clone();
+        let mut dos = DoS::new();
         task::spawn(async move {
             handle_connection(
                 stream,
@@ -168,7 +222,8 @@ pub async fn run_server_middleware(
                 state,
                 election_listener_address2,
                 other_server_election_addresses,
-                rng
+                rng,
+                &mut dos
             )
             .await;
         });
@@ -183,6 +238,7 @@ async fn handle_connection(
     my_election_address: String,
     other_server_election_addresses: Vec<String>,
     rng: Arc<tokio::sync::Mutex<StdRng>>,
+    dos: &mut DoS
 ) {
  //   println!("Beginning handle_connection");
   //  let mut message = Vec::new();
@@ -245,51 +301,89 @@ async fn handle_connection(
                 .write_all(b"self")
                 .await
                 .expect("Failed to send IP to client middleware");
-
+            // Zezooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo
             // Now transition to receiving and processing the image data
-            let mut data = Vec::new();
-            stream
-                .read_to_end(&mut data)
-                .await
-                .expect("Failed to read image data from client middleware");
 
-            // Send image data to the server for encryption
-            server_tx
-                .send(data)
-                .await
-                .expect("Failed to send data to server");
+            let mut buffer = Vec::new();
+            match stream.read_to_end(&mut buffer).await {
+                Ok(_) => {    
+                    // Attempt to deserialize the request
+                    match serde_json::from_slice::<Request>(&buffer) {
+                        Ok(request) => {
+                            match request {
+                                Request::SignUp(req) => {
+                                    println!("In server middleware request {}", req.client_ip);
+                                    let response: Response = dos.register_client(req.client_ip);
+                                    match &response {
+                                        Response::SignUp { client_id } => {
+                                            println!("In server middleware response {}", client_id)
+                                        },
+                                        _ => {},
+                                    }
+                                    // Serialize and send the response back to the client
+                                    let serialized_response = serde_json::to_string(&response).unwrap();
+                                    println!("Serialized response {}", serialized_response);
+                                    stream.write_all(&serialized_response.as_bytes())
+                                    .await
+                                    .expect("Failed to send the client id back to the client middleware");
+                                },
+                                Request::ImageRequest(data) => {
+                                    println!("I am an image request");
+                                    // Send image data to the server for encryption
+                                    server_tx
+                                    .send(data.image_data)
+                                    .await
+                                    .expect("Failed to send data to server");
 
-            // Receive the encrypted data from the server
-            let encrypted_data = {
-                let mut server_rx = server_rx.lock().await;
-                server_rx
-                    .recv()
-                    .await
-                    .expect("Failed to receive encrypted data from server")
-            };
+                                    // Receive the encrypted data from the server
+                                    let encrypted_data = {
+                                        let mut server_rx = server_rx.lock().await;
+                                        server_rx
+                                            .recv()
+                                            .await
+                                            .expect("Failed to receive encrypted data from server")
+                                    };
 
-            // Serialize the LightRequest
-            let img_response = ImageResponse {
-                request_id: light_message.request_id.clone(),
-                encrypted_image_data: encrypted_data,
-            };
+                                    // Serialize the LightRequest
+                                    let img_response = ImageResponse {
+                                        request_id: light_message.request_id.clone(),
+                                        encrypted_image_data: encrypted_data,
+                                    };
 
-            let serialized_image_response = match bincode::serialize(&img_response) {
-                Ok(data) => data,
-                Err(e) => {
-                    eprintln!("Failed to serialize ImageResponse {}: {}", img_response.request_id, e);
-                    return;
+                                    let serialized_image_response = match bincode::serialize(&img_response) {
+                                        Ok(data) => data,
+                                        Err(e) => {
+                                            eprintln!("Failed to serialize ImageResponse {}: {}", img_response.request_id, e);
+                                            return;
+                                        }
+                                    };
+
+                                    // Send encrypted data back to client middleware
+                                    stream
+                                        .write_all(&serialized_image_response)
+                                        .await
+                                        .expect("Failed to send encrypted data to client middleware");
+
+                                    // Decrease load after processing is complete
+                                    state.lock().await.decrement_load();
+                                },
+                                _ => {},
+                            }
+                        },
+                        Err(err) => {
+                            eprintln!("Failed to deserialize request: {}", err);
+                            let error_response = Response::Error { message: "Invalid request format".to_string()};
+                            let serialized_response = serde_json::to_vec(&error_response).unwrap();
+                            if let Err(err) = stream.write_all(&serialized_response).await {
+                                eprintln!("Failed to send error response: {}", err);
+                            }
+                        }
+                    }
                 }
-            };
-
-            // Send encrypted data back to client middleware
-            stream
-                .write_all(&serialized_image_response)
-                .await
-                .expect("Failed to send encrypted data to client middleware");
-
-            // Decrease load after processing is complete
-            state.lock().await.decrement_load();
+                Err(err) => {
+                    eprintln!("Failed to read from socket: {}", err);
+                }
+            }
         }
     }
 }
@@ -547,4 +641,128 @@ async fn listen_for_election_messages(address: String, state: Arc<Mutex<ServerSt
             }
         }
     }
+}
+
+/// Struct representing a downsampled image with a unique ID
+#[derive(Serialize, Deserialize, Debug)]
+struct Image {
+    id: u64,
+    image_data: Vec<u8>, // Placeholder for downsampled image data
+}
+
+// Shared State of the Directory of Service (DoS)
+pub struct DoS {
+    clients: HashMap<String, Client>, // Map of Client ID -> Client struct
+}
+
+impl DoS {
+    pub fn new() -> Self {
+        Self { clients: HashMap::new() }
+    }
+
+    pub fn handle_request(&mut self, request: Request) -> Response {
+        match request {
+            Request::SignUp(req) => self.register_client(req.client_ip),
+            Request::SignIn(req) => self.sign_in_client(req.client_id), 
+            Request::SignOut(req) => self.sign_out_client(req.client_id), 
+            Request::ImageRequest(req) => Response::Error { message: "To be handled".to_string()},
+            Request::ListContents =>    self.list_contents(),
+        }
+    }
+    
+    // Registers a new client and assigns a unique ID.
+    fn register_client(&mut self, ip: String) -> Response {
+        let client_id = uuid::Uuid::new_v4().to_string();
+        self.clients.insert(
+            client_id.clone(),
+            Client {
+                client_id: client_id.clone(),
+                ip,
+                online: true,
+                images: vec![],
+            },
+        );
+        // Append the client_id to a file.
+        if let Err(err) = append_to_file("client_ids.txt", &client_id) {
+            eprintln!("Failed to write client_id to file: {}", err);
+        }
+        Response::SignUp {client_id}
+    }
+
+    /// Signs in an existing client and marks it as online.
+    fn sign_in_client(&mut self, client_id: String) -> Response {
+        // Check if the client_id exists in the client_ids.txt file
+        if !client_id_exists_in_file("client_ids.txt", &client_id) {
+            return Response::Error {
+                message: "Client ID not found.".to_string(),
+            };
+        }
+
+        // If the client ID exists in the file, mark it online in the directory of service
+        if let Some(client) = self.clients.get_mut(&client_id) {
+            client.online = true;
+            Response::SignIn { success: true }
+        } else {
+            // The ID exists in the file but not in the current state
+            Response::Error {
+                message: "Client ID exists in the file but is not registered in memory.".to_string(),
+            }
+        }
+    }
+
+    /// Signs out an existing client and marks it as offline.
+    fn sign_out_client(&mut self, client_id: String) -> Response {
+        if let Some(client) = self.clients.get_mut(&client_id) {
+            client.online = false;
+            Response::SignIn{success: true}
+        } else {
+            Response::Error {
+                message: "Client ID not found.".to_string(),
+            }
+        }
+    }
+
+    /// Lists all clients and their statuses.
+    fn list_contents(&self) -> Response {
+        let clients: Vec<String> = self
+            .clients
+            .iter()
+            .map(|(_, client)| {
+                format!(
+                    "ID: {}, IP: {}, Online: {}, Images: {}",
+                    client.client_id,
+                    client.ip,
+                    client.online,
+                    client.images.len()
+                )
+            })
+            .collect();
+        Response::List { clients }
+    }
+}
+
+/// Appends a string to a file, creating the file if it doesn't exist.
+fn append_to_file(file_path: &str, content: &str) -> std::io::Result<()> {
+    let mut file = OpenOptions::new()
+        .create(true) // Create the file if it doesn't exist
+        .append(true) // Append to the file
+        .open(file_path)?;
+
+    // Write the content followed by a newline
+    writeln!(file, "{}", content)
+}
+
+/// Checks if a given client ID exists in the file.
+fn client_id_exists_in_file(file_path: &str, client_id: &str) -> bool {
+    if let Ok(file) = File::open(file_path) {
+        let reader = BufReader::new(file);
+        for line in reader.lines() {
+            if let Ok(existing_id) = line {
+                if existing_id.trim() == client_id {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
