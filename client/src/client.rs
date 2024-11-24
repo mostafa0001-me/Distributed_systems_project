@@ -175,13 +175,16 @@ pub async fn run_client(
                 receive_response_from_middleware(&mut rx, client_ip.clone()).await;
             }
             "2" => {
-                match read_id_from_file("client_ids.txt").await {
-                    Ok(client_id) => println!("Read client ID: {}", client_id),
+                match read_id_from_file("client_id.txt").await {
+                    Ok(client_id) => {
+                        println!("Read client ID: {}", client_id);
+                        sign_in(tx.clone(), client_id.clone()).await;
+                    },
                     Err(e) => eprintln!("Failed to read client ID: {}", e),
                 }
             }
             "3" => {
-                // receive_response_from_middleware(&mut rx, client_ip.clone()).await;
+                receive_response_from_middleware(&mut rx, client_ip.clone()).await;
             }
             "4" => {
                 // Encrypt an image from the server
@@ -226,6 +229,16 @@ async fn sign_up(
     send_request_to_middleware(tx, request).await;
 }
 
+async fn sign_in(
+    tx:  mpsc::Sender<Request>,
+    client_id: String,
+) {
+    let request = Request::SignIn(SignInRequest{
+        client_id: client_id.clone(),
+    });
+    send_request_to_middleware(tx, request).await;
+}
+
 async fn send_request_to_middleware(
     tx:  mpsc::Sender<Request>,
     request: Request,
@@ -233,7 +246,7 @@ async fn send_request_to_middleware(
     // Send the request to the middleware via tx
     if let Err(e) = tx.send(request).await {
         eprintln!(
-            "Client: Failed to send sign up request to middleware: {}",
+            "Client: Failed to send request to middleware: {}",
             e
         );
     } else {

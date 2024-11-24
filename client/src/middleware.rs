@@ -3,7 +3,8 @@
 use tokio::net::TcpStream;
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
 use tokio::sync::mpsc::{Receiver, Sender};
-use crate::client::{ImageRequest, Request, Response, SignUpRequest, SignUpResponse};
+use uuid::Uuid;
+use crate::client::{ImageRequest, Request, Response, SignInRequest, SignUpRequest, SignUpResponse};
 use crate::client::ImageResponse;
 use bincode;
 use serde::{Serialize, Deserialize};
@@ -26,20 +27,17 @@ pub async fn run_middleware(
     while let Some(request) = rx.recv().await {
         // Clone tx and server_ips for use in the spawned task
         let server_ips_clone = server_ips.clone();
-        println!("I am receiving something at the client middleware!");
         match request {
             Request::SignUp(req) => {
-                println!("Sign up request received at the middleware!");
                 sign_up(tx.clone(), req, server_ips_clone).await;
             },
             Request::SignIn(req) => {
-
+                sign_in(tx.clone(), req, server_ips_clone).await;
             },
             Request::SignOut(req) => {
 
             },
             Request::ImageRequest(req) => {
-                println!("Encrypt image received at the middleware!");
                 encrypt_image_from_server(tx.clone(), req, server_ips_clone).await;
             },
             Request::ListContents => {
@@ -54,55 +52,12 @@ async fn encrypt_image_from_server(
     request: ImageRequest,
     server_ips: Vec<String>
 ) {
-        // Spawn a new task to handle each request concurrently
-        let client_ip = request.client_ip.clone();
-        let tx_clone = tx.clone();
-        let request_id = request.request_id.clone();
-        let server_ips_clone = server_ips.clone();
-        tokio::spawn(async move {
-            // Attempt to connect to an available server
-            if let Some(mut server_stream) = find_available_server_t(&server_ips_clone, &client_ip, &request_id).await {
-                // Print IP of server
-                println!(
-                    "Client Middleware: Client Connected {} to server {} for request number {}.",
-                    client_ip, server_stream.peer_addr().unwrap(), request_id
-                );
-                // Serialize the request to send over TCP
-                let request = Request::ImageRequest(request);
-                let serialized_request = serde_json::to_string(&request).unwrap();
-
-                // Send the serialized data to the server
-                if let Err(e) = server_stream.write_all(&serialized_request.as_bytes()).await {
-                    eprintln!("Client Middleware: Failed to send image data to server: {}", e);
-                    return;
-                }
-
-                // Signal the server to start processing
-                if let Err(e) = server_stream.shutdown().await {
-                    eprintln!("Client Middleware: Failed to shutdown write stream: {}", e);
-                    return;
-                }
-
-                // Receive the encrypted response from the server
-                let mut response = Vec::new();
-                if let Err(e) = server_stream.read_to_end(&mut response).await {
-                    eprintln!("Client Middleware: Failed to read encrypted response from server: {}", e);
-                    return;
-                }
-
-                if let Ok(image_response) = bincode::deserialize::<ImageResponse>(&response) {
-                    println!("Client Middleware: received response id {}", image_response.request_id);
-                    // Send the response back to the client
-                    if let Err(e) = tx_clone.send(Response::ImageResponse(image_response)).await {
-                        eprintln!("Client Middleware: Failed to send response to client: {}", e);
-                    }
-                }
-            } else {
-                eprintln!("Client Middleware: No servers are available to handle the request.");
-            }
-        });
+    let client_ip = request.client_ip.clone();
+    let request_id = request.request_id.clone();
+    let request = Request::ImageRequest(request);
+    println!("Encrypt image function handler at the middleware!");
+    send_request_receive_response_client_server(tx, server_ips, client_ip, request, request_id).await; 
 }
-
 
 async fn sign_up(
     tx: Sender<Response>,
@@ -110,27 +65,47 @@ async fn sign_up(
     server_ips: Vec<String>
 ) {
     let client_ip = request.client_ip.clone();
-    let request_id = String::new();
-    let tx_clone = tx.clone();
-    let server_ips_clone = server_ips.clone();
-    println!("Sign up request function handler at the middleware!");
+    let request_id = Uuid::new_v4().to_string();
+    let request = Request::SignUp(request);
+    println!("Sign up function handler at the middleware!");
+    send_request_receive_response_client_server(tx, server_ips, client_ip, request, request_id).await; 
+}
+
+async fn sign_in(
+    tx: Sender<Response>,
+    request: SignInRequest,
+    server_ips: Vec<String>
+) {
+    let client_id = request.client_id.clone();
+    let request_id = Uuid::new_v4().to_string();
+    let request = Request::SignIn(request);
+    println!("Sign in request function handler at the middleware!");
+    send_request_receive_response_client_server(tx, server_ips, client_id, request, request_id).await; 
+}
+
+// Send a generic request from client middleware to server middleware as well as receive response
+async fn send_request_receive_response_client_server(
+    tx: Sender<Response>,
+    server_ips: Vec<String>,
+    client_ip_id: String,
+    request: Request,
+    request_id: String
+) {    
     tokio::spawn(async move {
         // Attempt to connect to an available server
-        if let Some(mut stream) = find_available_server_t(&server_ips_clone, &client_ip, &request_id).await {
+        if let Some(mut stream) = find_available_server_t(&server_ips, &client_ip_id, &request_id).await {
             // Print IP of server
             println!(
                 "Client Middleware: Client Connected {} to server {} for request number {}.",
-                client_ip, stream.peer_addr().unwrap(), request_id
+                client_ip_id, stream.peer_addr().unwrap(), request_id
             );
 
             // Serialize the request to send over TCP
-            let request = Request::SignUp(request);
             let serialized_request = serde_json::to_string(&request).unwrap();
-            println!("Serialized Request {}", serialized_request);
    
             // Send the serialized data to the server
             if let Err(e) = stream.write_all(serialized_request.as_bytes()).await {
-                eprintln!("Client Middleware: Failed to send image data to server: {}", e);
+                eprintln!("Client Middleware: Failed to send request to server: {}", e);
                 return;
             }
 
@@ -140,7 +115,7 @@ async fn sign_up(
                 return;
             }
 
-            // Receive the encrypted response from the server
+            // Receive the response from the server
             let mut buffer = Vec::new();
 
             match stream.read_to_end(&mut buffer).await {
@@ -149,8 +124,22 @@ async fn sign_up(
                         Ok(response) => {
                             match response {
                                 Response::SignUp(res) => {
-                                    println!("Got response {}", res.client_id);
-                                    if let Err(e) = tx_clone.send(Response::SignUp(res)).await {
+                                    if let Err(e) = tx.clone().send(Response::SignUp(res)).await {
+                                        eprintln!("Client Middleware: Failed to send response to client: {}", e);
+                                    }
+                                },
+                                Response::SignIn(res) => {
+                                    if let Err(e) = tx.clone().send(Response::SignIn(res)).await {
+                                        eprintln!("Client Middleware: Failed to send response to client: {}", e);
+                                    }
+                                },
+                                Response::ImageResponse(res) => {
+                                    if let Err(e) = tx.clone().send(Response::ImageResponse(res)).await {
+                                        eprintln!("Client Middleware: Failed to send response to client: {}", e);
+                                    }
+                                },
+                                Response::SignOut(res) => {
+                                    if let Err(e) = tx.clone().send(Response::SignOut(res)).await {
                                         eprintln!("Client Middleware: Failed to send response to client: {}", e);
                                     }
                                 },
@@ -173,15 +162,12 @@ async fn sign_up(
             eprintln!("Client Middleware: No servers are available to handle the request.");
         }
     });
-
-   
 }
-
 
 /// Function to attempt to connect to any available server
 async fn find_available_server_t(
     server_ips: &[String],
-    client_ip: &String,
+    client_ip:  &String,
     request_id: &String
 ) -> Option<TcpStream> {
     for ip in server_ips {

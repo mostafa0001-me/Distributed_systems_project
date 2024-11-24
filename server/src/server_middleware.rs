@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant}; 
 use sysinfo::{System, RefreshKind, CpuRefreshKind};
 use rand::{Rng, rngs::StdRng, SeedableRng};
-use std::{any, process};
+use std::process;
 use std::thread;
 use std::sync::Arc;
 use serde_json;
@@ -207,7 +207,7 @@ pub async fn run_server_middleware(
 
     while let Ok((stream, _)) = listener.accept().await {
         let server_tx = server_tx.clone();
-        let server_rx = Arc::clone(&server_rx);
+        let server_rx: Arc<Mutex<tokio::sync::mpsc::Receiver<Vec<u8>>>> = Arc::clone(&server_rx);
         let state = Arc::clone(&state);
         let other_server_election_addresses = other_server_election_addresses.clone();
         let rng = Arc::clone(&rng);
@@ -326,6 +326,8 @@ async fn handle_connection(
                                     stream.write_all(&serialized_response.as_bytes())
                                     .await
                                     .expect("Failed to send the client id back to the client middleware");
+                                    // // Decrease load after processing is complete
+                                    state.lock().await.decrement_load();
                                 },
                                 Request::ImageRequest(data) => {
                                     println!("I am an image request");
@@ -345,25 +347,16 @@ async fn handle_connection(
                                     };
 
                                     // Serialize the LightRequest
-                                    let img_response = ImageResponse {
+                                    let response = Response::ImageResponse(ImageResponse{
                                         request_id: light_message.request_id.clone(),
                                         encrypted_image_data: encrypted_data,
-                                    };
+                                    });
 
-                                    let serialized_image_response = match bincode::serialize(&img_response) {
-                                        Ok(data) => data,
-                                        Err(e) => {
-                                            eprintln!("Failed to serialize ImageResponse {}: {}", img_response.request_id, e);
-                                            return;
-                                        }
-                                    };
-
-                                    // Send encrypted data back to client middleware
-                                    stream
-                                        .write_all(&serialized_image_response)
-                                        .await
-                                        .expect("Failed to send encrypted data to client middleware");
-
+                                    // Serialize and send the response back to the client
+                                    let serialized_response = serde_json::to_string(&response).unwrap();
+                                    stream.write_all(&serialized_response.as_bytes())
+                                    .await
+                                    .expect("Failed to send the client id back to the client middleware");
                                     // Decrease load after processing is complete
                                     state.lock().await.decrement_load();
                                 },

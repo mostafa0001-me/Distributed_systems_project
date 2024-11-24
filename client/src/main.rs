@@ -3,7 +3,7 @@ mod middleware;
 
 use tokio::sync::mpsc;
 use std::env;
-use client::{ImageRequest, ImageResponse, Request, Response};
+use client::{Request, Response};
 
 #[tokio::main]
 async fn main() {

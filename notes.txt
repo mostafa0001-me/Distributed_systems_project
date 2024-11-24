@@ -1,14 +1,6 @@
-Directory of Service (DOS)
-1. Which peers are online ?
-2. List of images per client (downsampled, name of the images unique per client)
-3. Owners send access rights updates to DOS in case viewers are offline. The DOS should enforce these updates on the viewers once they are back online (Push Notification).
-4. Sign up / Sign in / Sign out --> new clients should send to DOS when they first sign up. The DOS should assign them a unique ID and send it to them. Old clients should sign in with their IDs.
-The client should tell the DOS when it is online or offline. 
-- Ctrl + c --> before killing the process must send to the DOS it is offline.
-- 
 
 
-client --> cargo run 127.0.0.1:8080 (client port for client-to-client communication) 127.0.0.1:5001 (server port)
+client --> cargo run 127.0.0.1:8080 (127.0.0.1:8081) (client port for client-to-client communication) 127.0.0.1:5001 (server port)
 server --> cargo run 127.0.0.1:5001 (client port) 127.0.0.1:8000 (election port)
 
 
@@ -29,4 +21,27 @@ Adjust the code to do the following:
 
 main branch or stokio branch --> resize image for low resolution
 =============================================
-1. Handle all the requests with the DOSs
+1. Handle request DoS
+2. Sign up should be done automatically when you open a terminal. (our choice)
+So, we need to remove it form the menu and call it automatically when we open a new terminal
+3. How are you gonna store the ID returned from the DOS? In a folder (client0, client1, client2) ?
+4. How are you gonna downsample the client images?
+5. How are you gonna store the DoS later for retrieval? Google Drive, how would you store the downsampled image?
+6. Should we add Arc<Mutex<>> to the DoS?
+7. For the Dos, you should only list the online users (except me)
+8. Name of the image is unique per client (handled from the client side)
+9. Owners send access rights updates to DOS in case viewers are offline.
+The DOS should enforce these updates on the viewers once they are back online (Push Notification).
+10. Ctrl + c --> before killing the process must send to the DOS it is offline.
+11. .gitignore
+12. -load after handling the request
+13. For find_avaialable_server --> it needs client_ip and request_id. Is this the case in all requests?
+14. review ownership
+15. client waits till the server encrypts
+16. viewer waits until the owner approves
+17. Tefa's bug: owner doesn't receive a new request except when initiating a new connection
+18. save image name when I receive it as a viewer
+19. viewer enter owner id not ip (make the id small)
+20. handling requesting the image (same image with different ids)
+21. request extra views without going into the view option
+22. implement edit access rights as an owner for any viewer
