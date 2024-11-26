@@ -39,9 +39,15 @@ The DOS should enforce these updates on the viewers once they are back online (P
 14. review ownership
 15. client waits till the server encrypts
 16. viewer waits until the owner approves
-17. Tefa's bug: owner doesn't receive a new request except when initiating a new connection
+17. Tefa's bug: owner doesn't receive a new request except when initiating a new connection <=  Mitigated
 18. save image name when I receive it as a viewer
 19. viewer enter owner id not ip (make the id small)
 20. handling requesting the image (same image with different ids)
 21. request extra views without going into the view option
 22. implement edit access rights as an owner for any viewer
+23. Do we need to save the decrypted image to temporary file?
+24. choose which pending requests to handle
+25. Image requests assume signle image
+26. Image name unique per clinet <= it should act instead of ID
+27. Denial "Failed to deserialize extra views response from owner."
+28. First sing in doesn't go to middleware

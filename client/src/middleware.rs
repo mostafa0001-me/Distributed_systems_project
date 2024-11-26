@@ -12,7 +12,7 @@ use serde_json;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct LightRequest {
-    pub client_ip: String,
+    pub client_ip: String, // Change that to client_id?
     pub request_id: String,
     pub message_data: String,
 }
@@ -26,6 +26,7 @@ pub async fn run_middleware(
     println!("Inside run middleware");
     while let Some(request) = rx.recv().await {
         // Clone tx and server_ips for use in the spawned task
+        println!("Inside while loop of run middleware");
         let server_ips_clone = server_ips.clone();
         match request {
             Request::SignUp(req) => {
@@ -35,7 +36,6 @@ pub async fn run_middleware(
                 sign_in(tx.clone(), req, server_ips_clone).await;
             },
             Request::SignOut(req) => {
-
             },
             Request::ImageRequest(req) => {
                 encrypt_image_from_server(tx.clone(), req, server_ips_clone).await;

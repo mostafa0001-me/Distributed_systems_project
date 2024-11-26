@@ -41,8 +41,8 @@ pub struct SignOutRequest {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct ImageRequest {
-    pub client_ip: String,
+pub struct ImageRequest { // Add the name of the image
+    pub client_ip: String, // Change that to client_id?
     pub request_id: String,
     pub image_data: Vec<u8>,
 }
@@ -83,7 +83,7 @@ static REQUEST_TIMESTAMPS: Lazy<Mutex<HashMap<String, Instant>>> = Lazy::new(|| 
 });
 
 #[derive(Clone, Serialize, Deserialize)]
-enum RequestType {
+pub enum RequestType {
     ImageRequest,
     ExtraViewsRequest,
 }
@@ -125,17 +125,22 @@ static PENDING_REQUESTS: Lazy<Arc<Mutex<Vec<PendingRequest>>>> = Lazy::new(|| {
 });
 
 // Helper function to write a length-prefixed message
-async fn write_length_prefixed_message(stream: &mut TcpStream, data: &[u8]) -> tokio::io::Result<()> {
+async fn write_length_prefixed_message(stream: &mut TcpStream, data: &[u8], close_connection: bool) -> tokio::io::Result<()> {
     // Write the length as a 4-byte unsigned integer in big-endian
     let length = data.len() as u32;
     let length_bytes = length.to_be_bytes();
     stream.write_all(&length_bytes).await?;
     stream.write_all(data).await?;
+    if close_connection {
+        if let Err(e) = stream.shutdown().await {
+            eprintln!("Failed to shutdown socket after writing: {}", e);
+        }
+    }
     Ok(())
 }
 
 // Helper function to read a length-prefixed message
-async fn read_length_prefixed_message(stream: &mut TcpStream) -> tokio::io::Result<Vec<u8>> {
+async fn read_length_prefixed_message(stream: &mut TcpStream, close_connection: bool) -> tokio::io::Result<Vec<u8>> {
     // Read the length as a 4-byte unsigned integer (big-endian)
     let mut length_bytes = [0u8; 4];
     stream.read_exact(&mut length_bytes).await?;
@@ -143,6 +148,12 @@ async fn read_length_prefixed_message(stream: &mut TcpStream) -> tokio::io::Resu
     // Limit the length to prevent DoS attacks
     let mut buffer = vec![0u8; length as usize];
     stream.read_exact(&mut buffer).await?;
+    // close the socket
+    if close_connection {
+        if let Err(e) = stream.shutdown().await {
+            eprintln!("Failed to shutdown socket after reading: {}", e);
+        }
+    }
     Ok(buffer)
 }
 
@@ -211,6 +222,14 @@ pub async fn run_client(
             "9" => {
                 // View pending requests
                 handle_pending_requests(client_ip.clone()).await;
+                match read_id_from_file("client_id.txt").await { 
+                    // dummy way to solve the communication issue
+                    // you need to send request to a the server after sennding an image response to the client
+                    Ok(client_id) => {
+                        sign_in(tx.clone(), client_id.clone()).await; // TODO(remove prints from here if there is no other way)
+                    },
+                    Err(e) => eprintln!("Failed to read client ID: {}", e),
+                }
             }
             _ => {
                 println!("Invalid choice.");
@@ -358,6 +377,7 @@ async fn encrypt_image_from_server(
     }
 }
 
+// handle image response from server
 async fn handle_image_response(response: ImageResponse, client_ip: String) {
     // Create the "Encrypted_images" directory if it doesn't exist
     fs::create_dir_all("Encrypted_images")
@@ -448,13 +468,13 @@ pub async fn request_image_from_client() {
     match TcpStream::connect(&address).await {
         Ok(mut stream) => {
             // Send the request using length-prefixed protocol
-            if let Err(e) = write_length_prefixed_message(&mut stream, &serialized_request).await {
+            if let Err(e) = write_length_prefixed_message(&mut stream, &serialized_request, false).await {
                 eprintln!("Failed to send request to other client: {}", e);
                 return;
             }
-
+            println!("Image Request sent to other client at {}.", address);
             // Receive the response
-            match read_length_prefixed_message(&mut stream).await {
+            match read_length_prefixed_message(&mut stream, true).await {
                 Ok(buffer) => {
                     // Deserialize the response
                     if let Ok(response) = bincode::deserialize::<ClientToClientResponse>(&buffer) {
@@ -474,7 +494,6 @@ pub async fn request_image_from_client() {
         }
     }
 }
-
 async fn handle_client_image_response(response: ClientToClientResponse) {
     // Create the "shared_with_me" directory if it doesn't exist
     fs::create_dir_all("shared_with_me")
@@ -485,7 +504,9 @@ async fn handle_client_image_response(response: ClientToClientResponse) {
     let image_filename = format!("shared_with_me/{}.png", response.image_id);
 
     // Save the encrypted image
-    fs::write(&image_filename, &response.image_data).await.expect("Failed to save image");
+    fs::write(&image_filename, &response.image_data)
+        .await
+        .expect("Failed to save image");
 
     println!("Received image from {}.", response.shared_by_ip);
 
@@ -621,7 +642,7 @@ async fn view_shared_images() {
     let decoded_image_buffer = extract_hidden_image_buffer_from_encoded(encrypted_image.clone());
 
     // Save the decrypted image to a temporary file
-    let decrypted_image_path = "decrypted_image.png";
+    let decrypted_image_path = "decrypted_image.png"; 
     fs::write(decrypted_image_path, &decoded_image_buffer).await.expect("Failed to save decrypted image");
 
     // Open the image using an external viewer
@@ -679,13 +700,13 @@ async fn request_extra_views(image_info: SharedImageInfo) {
     match TcpStream::connect(&image_info.shared_by).await {
         Ok(mut stream) => {
             // Send the request using length-prefixed protocol
-            if let Err(e) = write_length_prefixed_message(&mut stream, &serialized_request).await {
+            if let Err(e) = write_length_prefixed_message(&mut stream, &serialized_request, false).await {
                 eprintln!("Failed to send extra views request to owner: {}", e);
                 return;
             }
 
             // Receive the response
-            match read_length_prefixed_message(&mut stream).await {
+            match read_length_prefixed_message(&mut stream, true).await {
                 Ok(buffer) => {
                     // Deserialize the response
                     if let Ok(response) = bincode::deserialize::<ExtraViewsResponse>(&buffer) {
@@ -868,7 +889,7 @@ pub async fn run_client_server(client_ip: String) {
 
                 tokio::spawn(async move {
                     // Read the request
-                    match read_length_prefixed_message(&mut socket).await {
+                    match read_length_prefixed_message(&mut socket, false).await {
                         Ok(buffer) => {
                             // Handle the request
                             handle_client_request(buffer, socket).await;
@@ -1061,8 +1082,7 @@ async fn send_response_to_requester(
 
     // Send the serialized response using length-prefixed protocol
     let mut socket = pending_request.socket;
-    write_length_prefixed_message(&mut socket, &serialized_response).await?;
-
+    write_length_prefixed_message(&mut socket, &serialized_response, true).await?;
     Ok(())
 }
 
@@ -1080,7 +1100,7 @@ async fn send_extra_views_response(
     let serialized_response = bincode::serialize(&response)?;
 
     // Send the response using length-prefixed protocol
-    write_length_prefixed_message(&mut socket, &serialized_response).await?;
+    write_length_prefixed_message(&mut socket, &serialized_response, true).await?;
 
     Ok(())
 }
@@ -1089,7 +1109,7 @@ async fn send_denial_to_requester(mut socket: TcpStream) -> Result<(), Box<dyn s
     // Send a denial response or simply close the connection
     let denial_message = "Request denied by the user.";
     let denial_data = denial_message.as_bytes();
-    write_length_prefixed_message(&mut socket, denial_data).await?;
+    write_length_prefixed_message(&mut socket, denial_data, true).await?;
     Ok(())
 }
 
