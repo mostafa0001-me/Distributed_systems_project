@@ -15,6 +15,7 @@ use tokio::net::{TcpListener, TcpStream};
 use image::DynamicImage;
 use steganography::decoder::Decoder;
 use std::sync::Arc;
+use std::io::Write;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub enum Request {
@@ -162,6 +163,7 @@ pub async fn run_client(
     mut rx: mpsc::Receiver<Response>,
     client_ip: String,
 ) {
+    let rx = Arc::new(Mutex::new(rx));
     loop {
         println!("Please choose an option:");
         println!("1. Sign up");
@@ -183,7 +185,8 @@ pub async fn run_client(
         match choice {
             "1" => {
                 sign_up(tx.clone(), client_ip.clone()).await;
-                receive_response_from_middleware(&mut rx, client_ip.clone()).await;
+                let mut rx_lock = rx.lock().await;
+                receive_response_from_middleware(&mut rx_lock, client_ip.clone()).await;
             }
             "2" => {
                 match read_id_from_file("client_id.txt").await {
@@ -195,16 +198,32 @@ pub async fn run_client(
                 }
             }
             "3" => {
-                receive_response_from_middleware(&mut rx, client_ip.clone()).await;
+                let mut rx_lock = rx.lock().await;
+                receive_response_from_middleware(&mut rx_lock, client_ip.clone()).await;
             }
             "4" => {
                 // Encrypt an image from the server
                 encrypt_image_from_server(tx.clone(), client_ip.clone()).await;
-                receive_response_from_middleware(&mut rx, client_ip.clone()).await;
+                let client_ip2 = client_ip.clone();
+                let rx_clone = Arc::clone(&rx);
+                tokio::spawn(async move {
+                        let mut rx_lock = rx_clone.lock().await; // Lock the Mutex to access the receiver
+        		receive_response_from_middleware(&mut rx_lock, client_ip2).await;
+        		println!("Finished encrypting image!");
+    		});
             }
             "5" => {
                 // Request an image from another client
                 request_image_from_client().await;
+                match read_id_from_file("client_id.txt").await { 
+                    // dummy way to solve the communication issue
+                    // you need to send request to a the server after sennding an image response to the client
+                    Ok(client_id) => {
+                        sign_in(tx.clone(), client_id.clone()).await; // TODO(remove prints from here if there is no other way)
+                    },
+                    Err(e) => eprintln!("Failed to read client ID: {}", e),
+                } 
+                
             }
             "6" => {
                 // Placeholder for Edit access rights of a client
@@ -446,6 +465,14 @@ pub async fn request_image_from_client() {
         .expect("Failed to read input");
     let address = address.trim().to_string();
 
+    // Ask for the name of the image
+    println!("Enter the name of the image you want to request:");
+    let mut image_name = String::new();
+    io::stdin()
+        .read_line(&mut image_name)
+        .expect("Failed to read input");
+    let image_name = image_name.trim().to_string();
+
     println!("Enter the number of times you want to view the image:");
     let mut views_input = String::new();
     io::stdin()
@@ -453,11 +480,12 @@ pub async fn request_image_from_client() {
         .expect("Failed to read input");
     let views: u32 = views_input.trim().parse().expect("Please enter a valid number");
 
-    // Create a request message
+    // Create a request message with the image name
+    let image_name_temp = image_name.clone();
     let image_request = ClientToClientRequest {
         request_type: RequestType::ImageRequest,
         requested_views: views,
-        image_id: None,
+        image_id: Some(image_name_temp),  // Send the image name as the image_id
     };
 
     // Serialize the request message
@@ -473,8 +501,11 @@ pub async fn request_image_from_client() {
                 return;
             }
             println!("Image Request sent to other client at {}.", address);
-            // Receive the response
-            match read_length_prefixed_message(&mut stream, true).await {
+
+            // Spawn a background task to receive the image
+            let image_name_clone = image_name.clone();
+            tokio::spawn(async move {
+                match read_length_prefixed_message(&mut stream, true).await {
                 Ok(buffer) => {
                     // Deserialize the response
                     if let Ok(response) = bincode::deserialize::<ClientToClientResponse>(&buffer) {
@@ -488,12 +519,40 @@ pub async fn request_image_from_client() {
                     return;
                 }
             }
+            });
         }
         Err(e) => {
             eprintln!("Failed to connect to other client at {}: {}", address, e);
         }
     }
 }
+
+// Function to receive the image in the background and save it with the same name
+async fn receive_image_from_client(stream: &mut TcpStream, image_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    // Receive the image data from the owner client
+    match read_length_prefixed_message(stream, true).await {
+        Ok(buffer) => {
+            // Deserialize the response
+            if let Ok(response) = bincode::deserialize::<ClientToClientResponse>(&buffer) {
+                // Save the received image with the specified name
+                let image_file_path = format!("shared_with_me/{}", image_name); // Use the entered name
+                let mut image_file = std::fs::File::create(&image_file_path)?;
+                image_file.write_all(&response.image_data)?;
+
+                println!("Received and saved the image: {}", image_name);
+            } else {
+                eprintln!("Failed to deserialize response from other client.");
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to receive response from other client: {}", e);
+            return Err(Box::new(e));
+        }
+    }
+
+    Ok(())
+}
+
 async fn handle_client_image_response(response: ClientToClientResponse) {
     // Create the "shared_with_me" directory if it doesn't exist
     fs::create_dir_all("shared_with_me")
@@ -949,10 +1008,14 @@ async fn handle_pending_requests(client_ip: String) {
         match request.request_type {
             RequestType::ImageRequest => {
                 println!(
-                    "Image request from {}: {} views requested.",
+                    "Image request from {}: {} views requested for image {}.",
                     requester_ip,
-                    request.requested_views
+                    request.requested_views,
+                    request.image_id.clone().unwrap_or_else(|| "unknown".to_string())
                 );
+
+                // Ensure we have an image name in the request
+                let image_name = request.image_id.clone().unwrap_or_else(|| "default_image.png".to_string());
 
                 println!("Approve image request? (y/n)");
                 let mut approval = String::new();
@@ -981,7 +1044,7 @@ async fn handle_pending_requests(client_ip: String) {
                     };
 
                     // Send the response
-                    if let Err(e) = send_response_to_requester(pending_request, allowed_views, client_ip.clone()).await {
+                    if let Err(e) = send_response_to_requester(pending_request, allowed_views, client_ip.clone(), image_name).await {
                         eprintln!("Failed to send response: {}", e);
                     } else {
                         println!("Response sent.");
@@ -1053,9 +1116,10 @@ async fn send_response_to_requester(
     pending_request: PendingRequest,
     allowed_views: u32,
     client_ip: String,
+    image_name: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Construct the image file path based on your client_ip
-    let image_file_path = format!("Encrypted_images/encrypted_image_{}.png", client_ip.replace(":", "_"));
+    // Construct the image file path based on the requested image name
+    let image_file_path = format!("Encrypted_images/{}", image_name.clone());
 
     // Read the encrypted image file
     let mut image = image::open(&image_file_path)?;
@@ -1068,13 +1132,13 @@ async fn send_response_to_requester(
     image.write_to(&mut image_buffer, image::ImageOutputFormat::PNG)?;
 
     // Generate an image_id
-    let image_id = Uuid::new_v4().to_string();
-
+    //let image_id = Uuid::new_v4().to_string();
+    let image_name_temp = image_name.clone();
     // Create a response struct that includes the image data and the shared_by_ip
     let response = ClientToClientResponse {
         image_data: image_buffer,
         shared_by_ip: client_ip.clone(),
-        image_id: image_id.clone(),
+        image_id: image_name.clone(),
     };
 
     // Serialize the response
@@ -1083,6 +1147,7 @@ async fn send_response_to_requester(
     // Send the serialized response using length-prefixed protocol
     let mut socket = pending_request.socket;
     write_length_prefixed_message(&mut socket, &serialized_response, true).await?;
+    socket.flush().await?;
     Ok(())
 }
 
