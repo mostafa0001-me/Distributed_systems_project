@@ -16,6 +16,7 @@ use image::DynamicImage;
 use steganography::decoder::Decoder;
 use std::sync::Arc;
 use std::io::Write;
+use tokio::task;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub enum Request {
@@ -175,6 +176,7 @@ pub async fn run_client(
         println!("7. Exit");
         println!("8. View shared images");
         println!("9. View pending requests");
+        println!("10. Request Extra Views");
 
         let mut choice = String::new();
         io::stdin()
@@ -249,6 +251,10 @@ pub async fn run_client(
                     },
                     Err(e) => eprintln!("Failed to read client ID: {}", e),
                 }
+            }
+            "10" => {
+            	let image_info = choose_image().await;
+            	request_extra_views(image_info.expect("REASON").clone()).await;
             }
             _ => {
                 println!("Invalid choice.");
@@ -590,6 +596,77 @@ async fn handle_client_image_response(response: ClientToClientResponse) {
     println!("Image received and saved to {}.", image_filename);
 }
 
+async fn choose_image() -> Result<SharedImageInfo, Box<dyn std::error::Error>> {
+    use tokio::fs::File;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let shared_images_file = "shared_with_me/shared_images.txt";
+
+    let file = File::open(shared_images_file).await?;
+
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines();
+
+    let mut shared_images = Vec::new();
+
+    while let Some(line) = lines.next_line().await? {
+        // Parse the line
+        if let Some(info) = parse_shared_image_line(&line) {
+            shared_images.push(info);
+        }
+    }
+
+    if shared_images.is_empty() {
+        let err_msg = "No shared images available.";
+        println!("{}", err_msg);
+        return Err(err_msg.into());
+    }
+
+    // Display the list of shared images
+    println!("Shared images:");
+    for (index, image_info) in shared_images.iter().enumerate() {
+        println!(
+            "{}. Image ID: {}, Shared By: {}",
+            index + 1,
+            image_info.image_id,
+            image_info.shared_by,
+        );
+    }
+
+    // Prompt the user to select an image
+    println!("Enter the number of the image you want to view (or 'q' to quit):");
+    let mut input = String::new();
+    io::stdin()
+        .read_line(&mut input)
+        .expect("Failed to read input");
+    let input = input.trim();
+
+    if input.eq_ignore_ascii_case("q") {
+        return Err("User chose to quit.".into());
+    }
+
+    let choice: usize = match input.parse() {
+        Ok(num) => num,
+        Err(_) => {
+            let err_msg = "Invalid choice.";
+            println!("{}", err_msg);
+            return Err(err_msg.into());
+        }
+    };
+
+    if choice == 0 || choice > shared_images.len() {
+        let err_msg = "Invalid choice.";
+        println!("{}", err_msg);
+        return Err(err_msg.into());
+    }
+
+    // Get the selected image info
+    let image_info = shared_images[choice - 1].clone();
+
+    Ok(image_info)
+}
+
+
 async fn view_shared_images() {
     use tokio::fs::File;
     use tokio::io::{AsyncBufReadExt, BufReader};
@@ -755,59 +832,83 @@ async fn request_extra_views(image_info: SharedImageInfo) {
         }
     };
 
-    // Connect to the owner
-    match TcpStream::connect(&image_info.shared_by).await {
-        Ok(mut stream) => {
-            // Send the request using length-prefixed protocol
-            if let Err(e) = write_length_prefixed_message(&mut stream, &serialized_request, false).await {
-                eprintln!("Failed to send extra views request to owner: {}", e);
-                return;
-            }
+    let image_path = image_info.image_path.clone();
+    let image_id = image_info.image_id.clone();
+    let shared_by = image_info.shared_by.clone();
 
-            // Receive the response
-            match read_length_prefixed_message(&mut stream, true).await {
-                Ok(buffer) => {
-                    // Deserialize the response
-                    if let Ok(response) = bincode::deserialize::<ExtraViewsResponse>(&buffer) {
-                        if response.image_id != image_info.image_id {
-                            eprintln!("Image ID mismatch in extra views response.");
-                            return;
-                        }
-
-                        // Update the image with the new allowed views
-                        if let Err(e) = update_image_allowed_views(&image_info.image_path, response.new_allowed_views) {
-                            eprintln!("Failed to update image with new allowed views: {}", e);
-                        } else {
-                            println!("Received {} extra views.", response.new_allowed_views);
-                        }
-                    } else {
-                        eprintln!("Failed to deserialize extra views response from owner.");
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Failed to receive response from owner: {}", e);
+    // Spawn a background task to handle the response
+    task::spawn(async move {
+        // Connect to the owner
+        match TcpStream::connect(&shared_by).await {
+            Ok(mut stream) => {
+                // Send the request using length-prefixed protocol
+                if let Err(e) = write_length_prefixed_message(&mut stream, &serialized_request, false).await {
+                    eprintln!("Failed to send extra views request to owner: {}", e);
                     return;
                 }
+
+                // Flush the stream to ensure data is sent
+                if let Err(e) = stream.flush().await {
+                    eprintln!("Failed to flush stream: {}", e);
+                }
+
+                // Receive the response
+                match read_length_prefixed_message(&mut stream, true).await {
+                    Ok(buffer) => {
+                        // Deserialize the response
+                        if let Ok(response) = bincode::deserialize::<ExtraViewsResponse>(&buffer) {
+                            if response.image_id != image_id {
+                                eprintln!("Image ID mismatch in extra views response.");
+                                return;
+                            }
+
+                            // Update the image with the new allowed views
+                            if let Err(e) = update_image_allowed_views(&image_path, response.new_allowed_views) {
+                                eprintln!("Failed to update image with new allowed views: {}", e);
+                            } else {
+                                println!("Received {} extra views for image ID {}.", response.new_allowed_views, image_id);
+                            }
+                        } else {
+                            eprintln!("Failed to deserialize extra views response from owner.");
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to receive response from owner: {}", e);
+                        return;
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to connect to owner at {}: {}", shared_by, e);
             }
         }
-        Err(e) => {
-            eprintln!("Failed to connect to owner at {}: {}", image_info.shared_by, e);
-        }
-    }
+    });
+
+    // Immediately return to the menu
+    println!("Extra views request sent. You will be notified when the extra views are received.");
 }
+
 
 fn update_image_allowed_views(image_path: &str, new_allowed_views: u32) -> Result<(), Box<dyn std::error::Error>> {
     // Load the encrypted image
     let mut encrypted_image = image::open(image_path)?;
 
-    // Embed the new allowed_views into the encrypted image
-    embed_allowed_views_in_image(&mut encrypted_image, new_allowed_views)?;
+    // Extract the current allowed views from the image
+    let current_allowed_views = extract_allowed_views_from_image(&encrypted_image)?;
+
+    // Add the new allowed views to the current allowed views
+    let total_allowed_views = current_allowed_views.checked_add(new_allowed_views)
+        .ok_or("Integer overflow when adding allowed views")?;
+
+    // Embed the total allowed views back into the image
+    embed_allowed_views_in_image(&mut encrypted_image, total_allowed_views)?;
 
     // Save the updated encrypted image back to the file
     encrypted_image.save(image_path)?;
 
     Ok(())
 }
+
 
 // Function to parse a line from shared_images.txt into SharedImageInfo
 fn parse_shared_image_line(line: &str) -> Option<SharedImageInfo> {
