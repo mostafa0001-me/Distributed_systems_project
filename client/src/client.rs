@@ -65,12 +65,12 @@ pub struct SignUpResponse {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SignInResponse {
-    pub client_id: String,
+    pub success: bool
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SignOutResponse {
-    pub client_id: String,
+    pub success: bool
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -198,6 +198,8 @@ pub async fn run_client(
                     },
                     Err(e) => eprintln!("Failed to read client ID: {}", e),
                 }
+                let mut rx_lock = rx.lock().await;
+                receive_response_from_middleware(&mut rx_lock, "not needed".to_string()).await;
             }
             "3" => {
                 let mut rx_lock = rx.lock().await;
@@ -323,10 +325,17 @@ async fn receive_response_from_middleware(
             Response::SignUp(res) => {
                 handle_sign_up_response(res).await;
             },
+            Response::SignIn(res) => {
+                if res.success {
+                    println!("Client signed in successfully");
+                }else{
+                    println!("Client sign in failed. Attempt again");
+                }
+            },
             Response::ImageResponse(res) => {
                 handle_image_response(res, image_name).await;
             },
-            _ => println!("Unexpected response."),
+            _ => println!("Unexpected response Client."),
         }
     } else {
         eprintln!("Did not receive a response from the middleware.");

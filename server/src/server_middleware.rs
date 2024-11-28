@@ -329,6 +329,22 @@ async fn handle_connection(
                                     // // Decrease load after processing is complete
                                     state.lock().await.decrement_load();
                                 },
+                                Request::SignIn(req) => {
+                                    let response = dos.sign_in_client(req.client_id);
+                                    match &response {
+                                        Response::SignIn { success } => {
+                                            println!("In server middleware response {}", success)
+                                        },
+                                        _ => {},
+                                    }
+                                    // Serialize and send the response back to the client
+                                    let serialized_response = serde_json::to_string(&response).unwrap();
+                                    stream.write_all(&serialized_response.as_bytes())
+                                    .await
+                                    .expect("Failed to send the client id back to the client middleware");
+                                    // Decrease load after processing is complete
+                                    state.lock().await.decrement_load();
+                                },
                                 Request::ImageRequest(data) => {
                                     println!("I am an image request");
                                     // Send image data to the server for encryption
@@ -652,16 +668,6 @@ impl DoS {
     pub fn new() -> Self {
         Self { clients: HashMap::new() }
     }
-
-    pub fn handle_request(&mut self, request: Request) -> Response {
-        match request {
-            Request::SignUp(req) => self.register_client(req.client_ip),
-            Request::SignIn(req) => self.sign_in_client(req.client_id), 
-            Request::SignOut(req) => self.sign_out_client(req.client_id), 
-            Request::ImageRequest(req) => Response::Error { message: "To be handled".to_string()},
-            Request::ListContents =>    self.list_contents(),
-        }
-    }
     
     // Registers a new client and assigns a unique ID.
     fn register_client(&mut self, ip: String) -> Response {
@@ -694,13 +700,15 @@ impl DoS {
         // If the client ID exists in the file, mark it online in the directory of service
         if let Some(client) = self.clients.get_mut(&client_id) {
             client.online = true;
-            Response::SignIn { success: true }
-        } else {
-            // The ID exists in the file but not in the current state
-            Response::Error {
-                message: "Client ID exists in the file but is not registered in memory.".to_string(),
-            }
+         //   Response::SignIn { success: true }
         }
+        Response::SignIn { success: true } // for now it is always true
+        //  else {
+        //     // The ID exists in the file but not in the current state
+        //     Response::Error {
+        //         message: "Client ID exists in the file but is not registered in memory.".to_string(),
+        //     }
+        // }
     }
 
     /// Signs out an existing client and marks it as offline.

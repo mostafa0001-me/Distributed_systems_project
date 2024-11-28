@@ -4,8 +4,7 @@ use tokio::net::TcpStream;
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
 use tokio::sync::mpsc::{Receiver, Sender};
 use uuid::Uuid;
-use crate::client::{ImageRequest, Request, Response, SignInRequest, SignUpRequest, SignUpResponse};
-use crate::client::ImageResponse;
+use crate::client::{ImageRequest, Request, Response, SignInRequest, SignUpRequest};
 use bincode;
 use serde::{Serialize, Deserialize};
 use serde_json;
@@ -131,6 +130,7 @@ async fn send_request_receive_response_client_server(
                         Ok(response) => {
                             match response {
                                 Response::SignUp(res) => {
+                                    println!("Client Middleware: Received SignUp response from server.");
                                     if let Err(e) = tx.clone().send(Response::SignUp(res)).await {
                                         eprintln!("Client Middleware: Failed to send response to client: {}", e);
                                     }
@@ -150,7 +150,7 @@ async fn send_request_receive_response_client_server(
                                         eprintln!("Client Middleware: Failed to send response to client: {}", e);
                                     }
                                 },
-                                _ => println!("Unexpected response."),
+                                _ => println!("Unexpected response Middleware."),
                             }
                         }
                         Err(err) => {
