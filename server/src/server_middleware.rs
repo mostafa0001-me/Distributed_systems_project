@@ -707,7 +707,7 @@ impl DoS {
     fn sign_out_client(&mut self, client_id: String) -> Response {
         if let Some(client) = self.clients.get_mut(&client_id) {
             client.online = false;
-            Response::SignIn{success: true}
+            Response::SignOut{success: true}
         } else {
             Response::Error {
                 message: "Client ID not found.".to_string(),

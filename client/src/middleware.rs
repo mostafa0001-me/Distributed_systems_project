@@ -26,7 +26,7 @@ pub async fn run_middleware(
     println!("Inside run middleware");
     while let Some(request) = rx.recv().await {
         // Clone tx and server_ips for use in the spawned task
-        println!("Inside while loop of run middleware");
+      //  println!("Inside while loop of run middleware");
         let server_ips_clone = server_ips.clone();
         match request {
             Request::SignUp(req) => {
@@ -79,7 +79,7 @@ async fn sign_in(
     let client_id = request.client_id.clone();
     let request_id = Uuid::new_v4().to_string();
     let request = Request::SignIn(request);
-    println!("Sign in request function handler at the middleware!");
+  //  println!("Sign in request function handler at the middleware!");
     send_request_receive_response_client_server(tx, server_ips, client_id, request, request_id).await; 
 }
 
@@ -94,11 +94,18 @@ async fn send_request_receive_response_client_server(
     tokio::spawn(async move {
         // Attempt to connect to an available server
         if let Some(mut stream) = find_available_server_t(&server_ips, &client_ip_id, &request_id).await {
-            // Print IP of server
-            println!(
-                "Client Middleware: Client Connected {} to server {} for request number {}.",
-                client_ip_id, stream.peer_addr().unwrap(), request_id
-            );
+            match request {
+                Request::SignIn(_) => {
+                    // Do not print anything for SignIn requests
+                },
+                _ => {
+                    // Print IP of server
+                    println!(
+                        "Client Middleware: Client Connected {} to server {} for request number {}.",
+                        client_ip_id, stream.peer_addr().unwrap(), request_id
+                    );
+                }
+            }
 
             // Serialize the request to send over TCP
             let serialized_request = serde_json::to_string(&request).unwrap();
@@ -205,7 +212,7 @@ async fn find_available_server_t(
             if let Ok(bytes_read) = stream.read(&mut ack_buffer).await {
                 let response = String::from_utf8_lossy(&ack_buffer[..bytes_read]).to_string();
                 if !response.is_empty() {
-                    println!("Client Middleware: Server at {} accepted the request", ip);
+            //        println!("Client Middleware: Server at {} accepted the request", ip);
                     return Some(stream);
                 }
             }

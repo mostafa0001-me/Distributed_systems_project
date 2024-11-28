@@ -188,7 +188,7 @@ pub async fn run_client(
             "1" => {
                 sign_up(tx.clone(), client_ip.clone()).await;
                 let mut rx_lock = rx.lock().await;
-                receive_response_from_middleware(&mut rx_lock, client_ip.clone()).await;
+                receive_response_from_middleware(&mut rx_lock, "not needed".to_string()).await;
             }
             "2" => {
                 match read_id_from_file("client_id.txt").await {
@@ -201,16 +201,22 @@ pub async fn run_client(
             }
             "3" => {
                 let mut rx_lock = rx.lock().await;
-                receive_response_from_middleware(&mut rx_lock, client_ip.clone()).await;
+                receive_response_from_middleware(&mut rx_lock, "not needed".to_string()).await;
             }
             "4" => {
                 // Encrypt an image from the server
-                encrypt_image_from_server(tx.clone(), client_ip.clone()).await;
-                let client_ip2 = client_ip.clone();
+                let res = encrypt_image_from_server(tx.clone(), client_ip.clone()).await;
+                let image_name = match res {
+                    Ok(name) => name,
+                    Err(e) => {
+                        eprintln!("Failed to send image request to middlewhere: {}", e);
+                        continue;
+                    }
+                };
                 let rx_clone = Arc::clone(&rx);
                 tokio::spawn(async move {
                         let mut rx_lock = rx_clone.lock().await; // Lock the Mutex to access the receiver
-        		receive_response_from_middleware(&mut rx_lock, client_ip2).await;
+        		receive_response_from_middleware(&mut rx_lock, image_name).await;
         		println!("Finished encrypting image!");
     		});
             }
@@ -221,7 +227,7 @@ pub async fn run_client(
                     // dummy way to solve the communication issue
                     // you need to send request to a the server after sennding an image response to the client
                     Ok(client_id) => {
-                        sign_in(tx.clone(), client_id.clone()).await; // TODO(remove prints from here if there is no other way)
+                        sign_in(tx.clone(), client_id.clone()).await; 
                     },
                     Err(e) => eprintln!("Failed to read client ID: {}", e),
                 } 
@@ -243,14 +249,6 @@ pub async fn run_client(
             "9" => {
                 // View pending requests
                 handle_pending_requests(client_ip.clone()).await;
-                match read_id_from_file("client_id.txt").await { 
-                    // dummy way to solve the communication issue
-                    // you need to send request to a the server after sennding an image response to the client
-                    Ok(client_id) => {
-                        sign_in(tx.clone(), client_id.clone()).await; // TODO(remove prints from here if there is no other way)
-                    },
-                    Err(e) => eprintln!("Failed to read client ID: {}", e),
-                }
             }
             "10" => {
             	let image_info = choose_image().await;
@@ -259,6 +257,14 @@ pub async fn run_client(
             _ => {
                 println!("Invalid choice.");
             }
+        }
+        match read_id_from_file("client_id.txt").await { 
+            // dummy way to solve the communication issue
+            // you need to send request to a the server after sennding an image response to the client
+            Ok(client_id) => {
+                sign_in(tx.clone(), client_id.clone()).await;
+            },
+            Err(e) => eprintln!("Failed to read client ID: {}", e),
         }
     }
 }
@@ -293,11 +299,13 @@ async fn send_request_to_middleware(
             "Client: Failed to send request to middleware: {}",
             e
         );
-    } else {
-        println!(
-            "Request sent to middleware",
-        );
-    }
+    } 
+    // else {
+    //     // Check if the type of request is SignIn, don't print
+    //     println!(
+    //         "Request sent to middleware",
+    //     );
+    // }
 }
 async fn read_id_from_file(file_path: &str) -> io::Result<String> {
     // Read the file's content into a String
@@ -307,7 +315,7 @@ async fn read_id_from_file(file_path: &str) -> io::Result<String> {
 
 async fn receive_response_from_middleware(
     rx: &mut mpsc::Receiver<Response>,
-    client_ip: String,
+    image_name: String,
 ) {
     // Receive response from the middleware via rx
     if let Some(response) = rx.recv().await {
@@ -316,7 +324,7 @@ async fn receive_response_from_middleware(
                 handle_sign_up_response(res).await;
             },
             Response::ImageResponse(res) => {
-                handle_image_response(res, client_ip).await;
+                handle_image_response(res, image_name).await;
             },
             _ => println!("Unexpected response."),
         }
@@ -344,17 +352,16 @@ async fn append_to_file(file_path: &str, content: &str) -> tokio::io::Result<()>
     file.write_all(format!("{}\n", content).as_bytes()).await?;
     Ok(())
 }
-
 async fn encrypt_image_from_server(
     tx: mpsc::Sender<Request>,
     client_ip: String,
-) {
+) -> Result<String, Box<dyn std::error::Error>> {
     // Create the "my_images" directory if it doesn't exist
     fs::create_dir_all("my_images")
         .await
         .expect("Failed to create 'my_images' directory");
 
-    println!("Please enter the image file name to encrypt (from 'my_images' folder):");
+    println!("Please enter the image file name (without .png) to encrypt (from 'my_images' folder):");
     let mut image_file_name = String::new();
     io::stdin()
         .read_line(&mut image_file_name)
@@ -362,14 +369,14 @@ async fn encrypt_image_from_server(
     let image_file_name = image_file_name.trim();
 
     // Build the image path
-    let image_path = format!("my_images/{}", image_file_name);
+    let image_path = format!("my_images/{}.png", image_file_name);
 
     // Read the image data
     let image_data = match fs::read(&image_path).await {
         Ok(data) => data,
         Err(e) => {
             eprintln!("Failed to read image file {}: {}", image_path, e);
-            return;
+            return Err(Box::new(e));
         }
     };
 
@@ -394,16 +401,19 @@ async fn encrypt_image_from_server(
             "Client: Failed to send image to middleware (Request ID: {}): {}",
             request_id, e
         );
+        return Err(Box::new(e));
     } else {
         println!(
             "Client {}: Image data with request ID {} sent to middleware.",
             client_ip_clone, request_id
         );
     }
+
+    Ok(image_file_name.to_string())
 }
 
 // handle image response from server
-async fn handle_image_response(response: ImageResponse, client_ip: String) {
+async fn handle_image_response(response: ImageResponse, image_name: String) {
     // Create the "Encrypted_images" directory if it doesn't exist
     fs::create_dir_all("Encrypted_images")
         .await
@@ -411,8 +421,8 @@ async fn handle_image_response(response: ImageResponse, client_ip: String) {
 
     // Use client_ip to construct the file name
     let encrypted_image_path = format!(
-        "Encrypted_images/encrypted_image_{}.png",
-        client_ip.replace(":", "_")
+        "Encrypted_images/{}_encrypted.png",
+        image_name
     );
     if let Err(e) = fs::write(&encrypted_image_path, &response.encrypted_image_data).await {
         eprintln!(
@@ -472,7 +482,7 @@ pub async fn request_image_from_client() {
     let address = address.trim().to_string();
 
     // Ask for the name of the image
-    println!("Enter the name of the image you want to request:");
+    println!("Enter the name of the image you want to request (without .png):");
     let mut image_name = String::new();
     io::stdin()
         .read_line(&mut image_name)
@@ -533,32 +543,6 @@ pub async fn request_image_from_client() {
     }
 }
 
-// Function to receive the image in the background and save it with the same name
-async fn receive_image_from_client(stream: &mut TcpStream, image_name: &str) -> Result<(), Box<dyn std::error::Error>> {
-    // Receive the image data from the owner client
-    match read_length_prefixed_message(stream, true).await {
-        Ok(buffer) => {
-            // Deserialize the response
-            if let Ok(response) = bincode::deserialize::<ClientToClientResponse>(&buffer) {
-                // Save the received image with the specified name
-                let image_file_path = format!("shared_with_me/{}", image_name); // Use the entered name
-                let mut image_file = std::fs::File::create(&image_file_path)?;
-                image_file.write_all(&response.image_data)?;
-
-                println!("Received and saved the image: {}", image_name);
-            } else {
-                eprintln!("Failed to deserialize response from other client.");
-            }
-        }
-        Err(e) => {
-            eprintln!("Failed to receive response from other client: {}", e);
-            return Err(Box::new(e));
-        }
-    }
-
-    Ok(())
-}
-
 async fn handle_client_image_response(response: ClientToClientResponse) {
     // Create the "shared_with_me" directory if it doesn't exist
     fs::create_dir_all("shared_with_me")
@@ -566,10 +550,10 @@ async fn handle_client_image_response(response: ClientToClientResponse) {
         .expect("Failed to create 'shared_with_me' directory");
 
     // Use the image_id to generate the image filename
-    let image_filename = format!("shared_with_me/{}.png", response.image_id);
+    let image_path = format!("shared_with_me/{}_from_{}.png", response.image_id, response.shared_by_ip);
 
     // Save the encrypted image
-    fs::write(&image_filename, &response.image_data)
+    fs::write(&image_path, &response.image_data)
         .await
         .expect("Failed to save image");
 
@@ -579,7 +563,7 @@ async fn handle_client_image_response(response: ClientToClientResponse) {
     let shared_images_file = "shared_with_me/shared_images.txt";
     let log_entry = format!(
         "Image ID: {}, Image Path: {}, Shared By: {}\n",
-        response.image_id, image_filename, response.shared_by_ip
+        response.image_id, image_path, response.shared_by_ip
     );
 
     let mut log_file = OpenOptions::new()
@@ -593,7 +577,7 @@ async fn handle_client_image_response(response: ClientToClientResponse) {
         eprintln!("Failed to write to shared_images.txt: {}", e);
     }
 
-    println!("Image received and saved to {}.", image_filename);
+    println!("Image received and saved to {}.", image_path);
 }
 
 async fn choose_image() -> Result<SharedImageInfo, Box<dyn std::error::Error>> {
@@ -1116,7 +1100,7 @@ async fn handle_pending_requests(client_ip: String) {
                 );
 
                 // Ensure we have an image name in the request
-                let image_name = request.image_id.clone().unwrap_or_else(|| "default_image.png".to_string());
+                let image_name = request.image_id.clone().unwrap_or_else(|| "default_image".to_string());
 
                 println!("Approve image request? (y/n)");
                 let mut approval = String::new();
@@ -1220,7 +1204,7 @@ async fn send_response_to_requester(
     image_name: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Construct the image file path based on the requested image name
-    let image_file_path = format!("Encrypted_images/{}", image_name.clone());
+    let image_file_path = format!("Encrypted_images/{}_encrypted.png", image_name.clone());
 
     // Read the encrypted image file
     let mut image = image::open(&image_file_path)?;
@@ -1234,7 +1218,6 @@ async fn send_response_to_requester(
 
     // Generate an image_id
     //let image_id = Uuid::new_v4().to_string();
-    let image_name_temp = image_name.clone();
     // Create a response struct that includes the image data and the shared_by_ip
     let response = ClientToClientResponse {
         image_data: image_buffer,
