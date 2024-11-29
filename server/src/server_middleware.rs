@@ -13,9 +13,15 @@ use std::process;
 use std::thread;
 use std::sync::Arc;
 use serde_json;
-use uuid;
 use std::fs::{File, OpenOptions};
 use std::io::{Write, BufRead, BufReader};
+use nanoid::{nanoid};
+
+const alphabet_ids: [char; 62] = [
+    '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 
+    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
+    'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+];
 
 /// Struct representing a client in the system.
 #[derive(Serialize, Deserialize, Debug)]
@@ -671,7 +677,7 @@ impl DoS {
     
     // Registers a new client and assigns a unique ID.
     fn register_client(&mut self, ip: String) -> Response {
-        let client_id = uuid::Uuid::new_v4().to_string();
+        let client_id = nanoid!(8, &alphabet_ids); // small unique_ID of 8 characters for easier testing.
         self.clients.insert(
             client_id.clone(),
             Client {
@@ -691,11 +697,12 @@ impl DoS {
     /// Signs in an existing client and marks it as online.
     fn sign_in_client(&mut self, client_id: String) -> Response {
         // Check if the client_id exists in the client_ids.txt file
-        if !client_id_exists_in_file("client_ids.txt", &client_id) {
-            return Response::Error {
-                message: "Client ID not found.".to_string(),
-            };
-        }
+        // commented for now
+        // if !client_id_exists_in_file("client_ids.txt", &client_id) {
+        //     return Response::Error {
+        //         message: "Client ID not found.".to_string(),
+        //     };
+        // }
 
         // If the client ID exists in the file, mark it online in the directory of service
         if let Some(client) = self.clients.get_mut(&client_id) {

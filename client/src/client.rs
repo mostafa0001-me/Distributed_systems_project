@@ -25,6 +25,7 @@ pub enum Request {
     SignOut(SignOutRequest),
     ImageRequest(ImageRequest),
     ListContents,
+    HandShake(HandShakeRequest),
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -50,33 +51,44 @@ pub struct ImageRequest { // Add the name of the image
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+pub struct HandShakeRequest {
+    pub client_ip: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub enum Response {
     SignUp(SignUpResponse),
     SignIn(SignInResponse),
     SignOut(SignOutResponse),
     ImageResponse(ImageResponse),
+    HandShake(HandShakeResponse),
     Error {message: String},
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct SignUpResponse {
     pub client_id: String,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct SignInResponse {
     pub success: bool
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct SignOutResponse {
     pub success: bool
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct ImageResponse {
     pub request_id: String,
     pub encrypted_image_data: Vec<u8>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct HandShakeResponse {
+    pub success: bool
 }
 
 // HashMap to store timestamps for each request using Tokio's Mutex
@@ -268,6 +280,7 @@ pub async fn run_client(
             },
             Err(e) => eprintln!("Failed to read client ID: {}", e),
         }
+        //  hand_shake(tx.clone(), client_ip.clone()).await;
     }
 }
 
@@ -287,6 +300,16 @@ async fn sign_in(
 ) {
     let request = Request::SignIn(SignInRequest{
         client_id: client_id.clone(),
+    });
+    send_request_to_middleware(tx, request).await;
+}
+
+async fn hand_shake(
+    tx:  mpsc::Sender<Request>,
+    client_ip: String,
+) {
+    let request = Request::HandShake(HandShakeRequest{
+        client_ip: client_ip.clone(),
     });
     send_request_to_middleware(tx, request).await;
 }

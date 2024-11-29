@@ -42,6 +42,10 @@ pub async fn run_middleware(
             Request::ListContents => {
                 
             },
+            Request::HandShake(req) =>{
+      //          let request_id = Uuid::new_v4().to_string();
+    //            send_request_receive_response_client_server(tx.clone(), server_ips.clone(), req.client_ip.clone(), Request::HandShake(req), request_id).await; 
+            }
         }
     }
 }
@@ -150,7 +154,7 @@ async fn send_request_receive_response_client_server(
                                         eprintln!("Client Middleware: Failed to send response to client: {}", e);
                                     }
                                 },
-                                _ => println!("Unexpected response Middleware."),
+                                _ => println!("Unexpected response Middleware. {:?}", response),
                             }
                         }
                         Err(err) => {

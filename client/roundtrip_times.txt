@@ -24,3 +24,7 @@ Request ID: 9459f503-f0e8-4f0c-90ea-386a3bb1f597, Round Trip Time: 7.011973614s
 Request ID: 11d2e2dd-87a8-4cdf-af66-d76813724551, Round Trip Time: 48.38989561s
 Request ID: 2f85a5c5-e1ef-486b-ac5a-160b62695450, Round Trip Time: 6.073920927s
 Request ID: 9a625cbd-e5a2-4d9b-9878-a035293a22d1, Round Trip Time: 6.260826705s
+Request ID: 1c61c9ef-e111-4ab3-ba55-4a01cc1471ae, Round Trip Time: 16.005838496s
+Request ID: c2d62e17-28d7-46be-b3bc-8f69e4179778, Round Trip Time: 89.763302557s
+Request ID: d3eb75bf-26b2-47d7-a3c4-fb5aefbda166, Round Trip Time: 27.22204715s
+Request ID: 707566bc-3d85-4659-85a6-b126fbc00992, Round Trip Time: 25.075502932s
