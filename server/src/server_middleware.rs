@@ -38,6 +38,7 @@ pub enum Request {
     SignIn(SignInRequest),
     SignOut(SignOutRequest),
     ImageRequest(ImageRequest),
+    HandShake(HandShakeRequest),
     ListContents,
 }
 
@@ -62,6 +63,10 @@ pub struct ImageRequest {
     pub request_id: String,
     pub image_data: Vec<u8>,
 }
+#[derive(Clone, Serialize, Deserialize)]
+pub struct HandShakeRequest {
+    pub client_ip: String,
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub enum Response {
@@ -69,6 +74,7 @@ pub enum Response {
     SignIn {success: bool},
     SignOut {success: bool},
     ImageResponse(ImageResponse),
+    HandShake {success: bool},
     List {clients: Vec<String>},
     Error {message: String},
 }
@@ -344,6 +350,22 @@ async fn handle_connection(
                                         _ => {},
                                     }
                                     // Serialize and send the response back to the client
+                                    let serialized_response = serde_json::to_string(&response).unwrap();
+                                    stream.write_all(&serialized_response.as_bytes())
+                                    .await
+                                    .expect("Failed to send the client id back to the client middleware");
+                                    // Decrease load after processing is complete
+                                    state.lock().await.decrement_load();
+                                },
+                                Request::HandShake(req) => { // Not needed. was a trial for a null request. 
+                                    let response = Response::HandShake { success: true };
+                                    // Serialize and send the response back to the client
+                                    match &response {
+                                        Response::HandShake { success } => {
+                                            //nothing to do
+                                        },
+                                        _ => {},
+                                    }
                                     let serialized_response = serde_json::to_string(&response).unwrap();
                                     stream.write_all(&serialized_response.as_bytes())
                                     .await

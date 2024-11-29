@@ -43,8 +43,8 @@ pub async fn run_middleware(
                 
             },
             Request::HandShake(req) =>{
-      //          let request_id = Uuid::new_v4().to_string();
-    //            send_request_receive_response_client_server(tx.clone(), server_ips.clone(), req.client_ip.clone(), Request::HandShake(req), request_id).await; 
+                // let request_id = Uuid::new_v4().to_string();
+                // send_request_receive_response_client_server(tx.clone(), server_ips.clone(), req.client_ip.clone(), Request::HandShake(req), request_id).await; 
             }
         }
     }
@@ -140,9 +140,10 @@ async fn send_request_receive_response_client_server(
                                     }
                                 },
                                 Response::SignIn(res) => {
-                                    if let Err(e) = tx.clone().send(Response::SignIn(res)).await {
-                                        eprintln!("Client Middleware: Failed to send response to client: {}", e);
-                                    }
+                                    // if let Err(e) = tx.clone().send(Response::SignIn(res)).await {
+                                    //     eprintln!("Client Middleware: Failed to send response to client: {}", e);
+                                    // }
+                                   // don't uncomment until we resolve the null request.
                                 },
                                 Response::ImageResponse(res) => {
                                     if let Err(e) = tx.clone().send(Response::ImageResponse(res)).await {

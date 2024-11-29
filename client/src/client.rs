@@ -210,8 +210,10 @@ pub async fn run_client(
                     },
                     Err(e) => eprintln!("Failed to read client ID: {}", e),
                 }
-                let mut rx_lock = rx.lock().await;
-                receive_response_from_middleware(&mut rx_lock, "not needed".to_string()).await;
+                // let mut rx_lock = rx.lock().await;
+                // receive_response_from_middleware(&mut rx_lock, "not needed".to_string()).await;
+                // don't uncomment until we resolve the null request.
+                print!("Finished signing in!");
             }
             "3" => {
                 let mut rx_lock = rx.lock().await;
@@ -280,7 +282,7 @@ pub async fn run_client(
             },
             Err(e) => eprintln!("Failed to read client ID: {}", e),
         }
-        //  hand_shake(tx.clone(), client_ip.clone()).await;
+     //   hand_shake(tx.clone(), client_ip.clone()).await;
     }
 }
 
@@ -348,13 +350,13 @@ async fn receive_response_from_middleware(
             Response::SignUp(res) => {
                 handle_sign_up_response(res).await;
             },
-            Response::SignIn(res) => {
-                if res.success {
-                    println!("Client signed in successfully");
-                }else{
-                    println!("Client sign in failed. Attempt again");
-                }
-            },
+            // Response::SignIn(res) => {
+            //     if res.success {
+            //         println!("Client signed in successfully");
+            //     }else{
+            //         println!("Client sign in failed. Attempt again");
+            //     }
+            // },
             Response::ImageResponse(res) => {
                 handle_image_response(res, image_name).await;
             },
