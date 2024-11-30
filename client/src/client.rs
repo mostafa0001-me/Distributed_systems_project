@@ -197,11 +197,11 @@ pub async fn run_client(
         println!("Please choose an option:");
         println!("1. Sign up");
         println!("2. Sign in");
-        println!("3. Request DOS");
-        println!("4. Encrypt an image from the server");
-        println!("5. Request an image from another client");
-        println!("6. Edit access rights of a client");
-        println!("7. Exit");
+        println!("3. Sign Out");
+        println!("4. Request DOS");
+        println!("5. Encrypt an image from the server");
+        println!("6. Request an image from another client");
+        println!("7. Edit access rights of a client");
         println!("8. View shared images");
         println!("9. View pending requests");
         println!("10. Request Extra Views");
@@ -211,15 +211,14 @@ pub async fn run_client(
             .read_line(&mut choice)
             .expect("Failed to read input");
         let choice = choice.trim();
-
         match choice {
             "1" => {
                 if *SIGNED_UP.lock().await {
                     println!("Client already signed up.");
                 }else{
-                sign_up(tx.clone(), client_ip.clone()).await;
-                let mut rx_lock = rx.lock().await;
-                receive_response_from_middleware(&mut rx_lock, "not needed".to_string()).await;
+                    sign_up(tx.clone(), client_ip.clone()).await;
+                    let mut rx_lock = rx.lock().await;
+                    receive_response_from_middleware(&mut rx_lock, "not needed".to_string()).await;
                 }
             }
             "2" => {
@@ -243,12 +242,29 @@ pub async fn run_client(
                     receive_response_from_middleware(&mut rx_lock, "not needed".to_string()).await;
             }
             }
-            "3" => {
+            "3" => {// Sign out
+                if !*SIGNED_IN.lock().await {
+                    println!("Client already signed out.");
+                    continue;
+                }else{
+                    sign_out(tx.clone(), CLIENT_ID.lock().await.clone()).await;
+                    let mut rx_lock = rx.lock().await;
+                    receive_response_from_middleware(&mut rx_lock, "not needed".to_string()).await;
+                }
+            }
+            "4" => { // Request DOS
+                if !*SIGNED_IN.lock().await {
+                    println!("Please sign in first.");
+                    continue;
+                }
                 let mut rx_lock = rx.lock().await;
                 receive_response_from_middleware(&mut rx_lock, "not needed".to_string()).await;
             }
-            "4" => {
-                // Encrypt an image from the server
+            "5" => {// Encrypt an image from the server
+                if !*SIGNED_IN.lock().await {
+                    println!("Please sign in first.");
+                    continue;
+                }
                 let res = encrypt_image_from_server(tx.clone(), client_ip.clone()).await;
                 let image_name = match res {
                     Ok(name) => name,
@@ -264,29 +280,40 @@ pub async fn run_client(
         		println!("Finished encrypting image!");
     		});
             }
-            "5" => {
-                // Request an image from another client
+            "6" => {// Request an image from another client
+                if !*SIGNED_IN.lock().await {
+                    println!("Please sign in first.");
+                    continue;
+                }
                 request_image_from_client().await;
                 sign_in(tx.clone(), CLIENT_ID.lock().await.clone(), client_ip.clone(), false).await;
             }
-            "6" => {
-                // Placeholder for Edit access rights of a client
+            "7" => { // Placeholder for Edit access rights of a client
+                if !*SIGNED_IN.lock().await {
+                    println!("Please sign in first.");
+                    continue;
+                }
                 println!("Edit access rights functionality not yet implemented.");
             }
-            "7" => {
-                // Exit the loop
-                println!("Exiting.");
-                break;
-            }
-            "8" => {
-                // View shared images
+            "8" => {// View shared images
+                if !*SIGNED_IN.lock().await {
+                    println!("Please sign in first.");
+                    continue;
+                }
                 view_shared_images().await;
             }
-            "9" => {
-                // View pending requests
+            "9" => {// View pending requests
+                if !*SIGNED_IN.lock().await {
+                    println!("Please sign in first.");
+                    continue;
+                }
                 handle_pending_requests(client_ip.clone()).await;
             }
-            "10" => {
+            "10" => { // Request Extra Views
+                if !*SIGNED_IN.lock().await {
+                    println!("Please sign in first.");
+                    continue;
+                }
             	let image_info = choose_image().await;
             	request_extra_views(image_info.expect("REASON").clone()).await;
             }
@@ -330,6 +357,16 @@ async fn sign_in(
         client_id: client_id.clone(),
         client_ip: client_ip.clone(),
         reply_back,
+    });
+    send_request_to_middleware(tx, request).await;
+}
+
+async fn sign_out(
+    tx:  mpsc::Sender<Request>,
+    client_id: String,
+) {
+    let request = Request::SignOut(SignOutRequest{
+        client_id: client_id.clone(),
     });
     send_request_to_middleware(tx, request).await;
 }
@@ -386,6 +423,16 @@ async fn receive_response_from_middleware(
                     println!("Client signed in successfully");
                 }else{
                     println!("Client sign in failed. Attempt again");
+                }
+            },
+            Response::SignOut(res) => {
+                if res.success {
+                    *SIGNED_UP.lock().await = false; // we can sign a new user up after signing out.
+                    *SIGNED_IN.lock().await = false;
+                    *CLIENT_ID.lock().await = "".to_string();
+                    println!("Client signed out successfully");
+                }else{
+                    println!("Client sign out failed. Attempt again");
                 }
             },
             Response::ImageResponse(res) => {

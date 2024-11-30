@@ -4,7 +4,7 @@ use tokio::net::TcpStream;
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
 use tokio::sync::mpsc::{Receiver, Sender};
 use uuid::Uuid;
-use crate::client::{ImageRequest, Request, Response, SignInRequest, SignUpRequest};
+use crate::client::{ImageRequest, Request, Response, SignInRequest, SignOutRequest, SignUpRequest};
 use bincode;
 use serde::{Serialize, Deserialize};
 use serde_json;
@@ -35,6 +35,7 @@ pub async fn run_middleware(
                 sign_in(tx.clone(), req, server_ips_clone).await;
             },
             Request::SignOut(req) => {
+                sign_out(tx.clone(), req, server_ips_clone).await;
             },
             Request::ImageRequest(req) => {
                 encrypt_image_from_server(tx.clone(), req, server_ips_clone).await;
@@ -83,6 +84,18 @@ async fn sign_in(
     let request_id = Uuid::new_v4().to_string();
     let request = Request::SignIn(request);
   //  println!("Sign in request function handler at the middleware!");
+    send_request_receive_response_client_server(tx, server_ips, client_id, request, request_id).await; 
+}
+
+async fn sign_out(
+    tx: Sender<Response>,
+    request: SignOutRequest,
+    server_ips: Vec<String>
+) {
+    let client_id = request.client_id.clone();
+    let request_id = Uuid::new_v4().to_string();
+    let request = Request::SignOut(request);
+    println!("Sign out request function handler at the middleware!");
     send_request_receive_response_client_server(tx, server_ips, client_id, request, request_id).await; 
 }
 

@@ -52,3 +52,4 @@ The DOS should enforce these updates on the viewers once they are back online (P
 27. Denial "Failed to deserialize extra views response from owner."
 28. First sing in doesn't go to middleware
 29. We used client ip in the past as id (with images and other things). Need to change ig
+30. Maybe add functionalities to view my own images?
