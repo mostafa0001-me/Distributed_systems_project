@@ -53,8 +53,9 @@ pub struct SignOutRequest {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ImageRequest {
-    pub client_ip: String,
+    pub client_id: String,
     pub request_id: String,
+    pub image_name: String, // we assume it is unique per clinet.
     pub image_data: Vec<u8>,
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -96,6 +97,7 @@ pub struct LightMessage {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ImageResponse {
     pub request_id: String,
+    pub image_name: String,
     pub encrypted_image_data: Vec<u8>,
 }
 
@@ -343,7 +345,7 @@ async fn handle_connection(
                                     println!("Serialized response {}", serialized_response);
                                     stream.write_all(&serialized_response.as_bytes())
                                     .await
-                                    .expect("Failed to send the client id back to the client middleware");
+                                    .expect("Failed to send the singnup response back to the client middleware");
                                     // // Decrease load after processing is complete
                                     state.lock().await.decrement_load();
                                 },
@@ -359,7 +361,7 @@ async fn handle_connection(
                                     let serialized_response = serde_json::to_string(&response).unwrap();
                                     stream.write_all(&serialized_response.as_bytes())
                                     .await
-                                    .expect("Failed to send the client id back to the client middleware");
+                                    .expect("Failed to send the sigin in response back to the client middleware");
                                     // Decrease load after processing is complete
                                     state.lock().await.decrement_load();
                                 },
@@ -375,7 +377,7 @@ async fn handle_connection(
                                     let serialized_response = serde_json::to_string(&response).unwrap();
                                     stream.write_all(&serialized_response.as_bytes())
                                     .await
-                                    .expect("Failed to send the client id back to the client middleware");
+                                    .expect("Failed to send the sign out response back to the client middleware");
                                     // Decrease load after processing is complete
                                     state.lock().await.decrement_load();
                                 }
@@ -391,7 +393,7 @@ async fn handle_connection(
                                     let serialized_response = serde_json::to_string(&response).unwrap();
                                     stream.write_all(&serialized_response.as_bytes())
                                     .await
-                                    .expect("Failed to send the client id back to the client middleware");
+                                    .expect("Failed to send the DOS response back to the client middleware");
                                     // Decrease load after processing is complete
                                     state.lock().await.decrement_load();
                                 },
@@ -431,14 +433,16 @@ async fn handle_connection(
                                     // Serialize the LightRequest
                                     let response = Response::ImageResponse(ImageResponse{
                                         request_id: light_message.request_id.clone(),
+                                        image_name: data.image_name.clone(),
                                         encrypted_image_data: encrypted_data,
                                     });
-
+                                    // Register the image name in the dos
+                                    dos.add_image_name(data.client_id.clone(), data.image_name.clone()).await;
                                     // Serialize and send the response back to the client
                                     let serialized_response = serde_json::to_string(&response).unwrap();
                                     stream.write_all(&serialized_response.as_bytes())
                                     .await
-                                    .expect("Failed to send the client id back to the client middleware");
+                                    .expect("Failed to send the image response back to the client middleware");
                                     // Decrease load after processing is complete
                                     state.lock().await.decrement_load();
                                 },
@@ -809,6 +813,39 @@ impl DoS {
         }
        
         Response::SignOut { success: true }
+    }
+
+    async fn add_image_name(&self, client_id: String, image_name: String) {
+        // The second line of each clinet file is a comma seperated list of its images names.
+        let file_path = format!("DOS/{}.txt", client_id);
+        // Read the existing content of the file
+        let content = match read_from_file(&file_path).await {
+            Ok(content) => content,
+            Err(err) => {
+                eprintln!("Failed to read client file: {}", err);
+                return;
+            }
+        };
+        let mut lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+        // If there is no second line, add one
+        if lines.len() == 0{
+            eprint!("The clinet file is empty.");
+            return;
+        }
+        else if lines.len() == 1 {
+            lines.push(image_name);
+        } else {
+            // Append the new image_name to the second line
+            lines[1] = format!("{},{}", lines[1].trim_end(), image_name);
+        }
+
+        // Reconstruct the content
+        let new_content = lines.join("\n");
+
+        // Write the new content back to the file
+        if let Err(err) = write_to_file(&file_path, &new_content).await {
+            eprintln!("Failed to write updated client file: {}", err);
+        }
     }
 
     // get online clients, their ips, and images

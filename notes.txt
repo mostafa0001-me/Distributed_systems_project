@@ -21,10 +21,11 @@ Adjust the code to do the following:
 
 main branch or stokio branch --> resize image for low resolution
 =============================================
-1. Handle request DoS
-6. Should we add Arc<Mutex<>> to the DoS?
-7. For the Dos, you should only list the online users (except me)
-8. Name of the image is unique per client (handled from the client side)
+1. Extra views request from ... (.. is wrong)
+Request denial is Failed to deserialize response from other client.
+shred_by should be by id?
+
+6. Should we add Arc<Mutex<>> to the DoS? It works well wothout it
 9. Owners send access rights updates to DOS in case viewers are offline.
 The DOS should enforce these updates on the viewers once they are back online (Push Notification).
 10. Ctrl + c --> before killing the process must send to the DOS it is offline.
@@ -48,3 +49,7 @@ The DOS should enforce these updates on the viewers once they are back online (P
 28. First sing in doesn't go to middleware
 29. We used client ip in the past as id (with images and other things). Need to change ig
 30. Maybe add functionalities to view my own images?
+
+
+Additional:
+I don't check if the image name is already saved in the dos. I just append. 

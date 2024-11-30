@@ -57,11 +57,11 @@ async fn encrypt_image_from_server(
     request: ImageRequest,
     server_ips: Vec<String>
 ) {
-    let client_ip = request.client_ip.clone();
+    let client_id = request.client_id.clone();
     let request_id = request.request_id.clone();
     let request = Request::ImageRequest(request);
     println!("Encrypt image function handler at the middleware!");
-    send_request_receive_response_client_server(tx, server_ips, client_ip, request, request_id).await; 
+    send_request_receive_response_client_server(tx, server_ips, client_id, request, request_id).await; 
 }
 
 async fn sign_up(

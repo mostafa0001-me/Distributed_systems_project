@@ -21,6 +21,8 @@ use tokio::task;
 use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
+use crate::client;
+
 #[derive(Clone, Serialize, Deserialize)]
 pub enum Request {
     SignUp(SignUpRequest),
@@ -49,9 +51,10 @@ pub struct SignOutRequest {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct ImageRequest { // Add the name of the image
-    pub client_ip: String, // Change that to client_id?
+pub struct ImageRequest { 
+    pub client_id: String,
     pub request_id: String,
+    pub image_name: String, // we assume it is unique per clinet.
     pub image_data: Vec<u8>,
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -100,6 +103,7 @@ pub struct SignOutResponse {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct ImageResponse {
     pub request_id: String,
+    pub image_name: String, 
     pub encrypted_image_data: Vec<u8>,
 }
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -234,7 +238,7 @@ pub async fn run_client(
                 }else{
                     sign_up(tx.clone(), client_ip.clone()).await;
                     let mut rx_lock = rx.lock().await;
-                    receive_response_from_middleware(&mut rx_lock, "not needed".to_string()).await;
+                    receive_response_from_middleware(&mut rx_lock).await;
                 }
             }
             "2" => {
@@ -255,7 +259,7 @@ pub async fn run_client(
                     *CLIENT_ID.lock().await = client_id.clone();
                     sign_in(tx.clone(), client_id.clone(), client_ip.clone(), true).await;   
                     let mut rx_lock = rx.lock().await;
-                    receive_response_from_middleware(&mut rx_lock, "not needed".to_string()).await;
+                    receive_response_from_middleware(&mut rx_lock).await;
             }
             }
             "3" => {// Sign out
@@ -265,7 +269,7 @@ pub async fn run_client(
                 }else{
                     sign_out(tx.clone(), CLIENT_ID.lock().await.clone()).await;
                     let mut rx_lock = rx.lock().await;
-                    receive_response_from_middleware(&mut rx_lock, "not needed".to_string()).await;
+                    receive_response_from_middleware(&mut rx_lock).await;
                 }
             }
             "4" => { // Request DOS
@@ -275,25 +279,22 @@ pub async fn run_client(
                 }
                 request_dos(tx.clone(), CLIENT_ID.lock().await.clone()).await;
                 let mut rx_lock = rx.lock().await;
-                receive_response_from_middleware(&mut rx_lock, "not needed".to_string()).await;
+                receive_response_from_middleware(&mut rx_lock).await;
             }
             "5" => {// Encrypt an image from the server
                 if !*SIGNED_IN.lock().await {
                     println!("Please sign in first.");
                     continue;
                 }
-                let res = encrypt_image_from_server(tx.clone(), client_ip.clone()).await;
-                let image_name = match res {
-                    Ok(name) => name,
-                    Err(e) => {
-                        eprintln!("Failed to send image request to middlewhere: {}", e);
-                        continue;
-                    }
-                };
+             //   println!("Here1");
+                let client_id = CLIENT_ID.lock().await.clone();
+               // println!("Here2 {}", client_id);
+                encrypt_image_from_server(tx.clone(), client_id).await;
+                println!("Here2");
                 let rx_clone = Arc::clone(&rx);
                 tokio::spawn(async move {
                         let mut rx_lock = rx_clone.lock().await; // Lock the Mutex to access the receiver
-        		receive_response_from_middleware(&mut rx_lock, image_name).await;
+        		receive_response_from_middleware(&mut rx_lock).await;
         		println!("Finished encrypting image!");
     		});
             }
@@ -434,7 +435,6 @@ async fn read_id_from_file(file_path: &str) -> io::Result<String> {
 
 async fn receive_response_from_middleware(
     rx: &mut mpsc::Receiver<Response>,
-    image_name: String,
 ) {
     // Receive response from the middleware via rx
     if let Some(response) = rx.recv().await {
@@ -473,7 +473,7 @@ async fn receive_response_from_middleware(
             }
             },
             Response::ImageResponse(res) => {
-                handle_image_response(res, image_name).await;
+                handle_image_response(res).await;
             },
             _ => println!("Unexpected response Client."),
         }
@@ -520,8 +520,8 @@ async fn append_to_file(file_path: &str, content: &str) -> tokio::io::Result<()>
 }
 async fn encrypt_image_from_server(
     tx: mpsc::Sender<Request>,
-    client_ip: String,
-) -> Result<String, Box<dyn std::error::Error>> {
+    client_id: String,
+) {
     let image_dir = format!("Client_{}/my_images", *CLIENT_ID.lock().await);
     println!("Please enter the image file name (without .png) to encrypt (from {} folder):", image_dir);
     let mut image_file_name = String::new();
@@ -538,16 +538,17 @@ async fn encrypt_image_from_server(
         Ok(data) => data,
         Err(e) => {
             eprintln!("Failed to read image file {}: {}", image_path, e);
-            return Err(Box::new(e));
+            return;
         }
     };
 
     let request_id = Uuid::new_v4().to_string();
-    let client_ip_clone = client_ip.clone();
+    let client_id_clone = client_id.clone();
 
     let request = ImageRequest {
-        client_ip: client_ip_clone.clone(),
+        client_id: client_id_clone.clone(),
         request_id: request_id.clone(),
+        image_name: image_file_name.to_string(),
         image_data,
     };
 
@@ -563,19 +564,17 @@ async fn encrypt_image_from_server(
             "Client: Failed to send image to middleware (Request ID: {}): {}",
             request_id, e
         );
-        return Err(Box::new(e));
+        return;
     } else {
         println!(
             "Client {}: Image data with request ID {} sent to middleware.",
-            client_ip_clone, request_id
+            client_id_clone, request_id
         );
     }
-
-    Ok(image_file_name.to_string())
 }
 
 // handle image response from server
-async fn handle_image_response(response: ImageResponse, image_name: String) {
+async fn handle_image_response(response: ImageResponse) {
     // Create the "Encrypted_images" directory if it doesn't exist
     let encrypted_images_dir = format!("Client_{}/Encrypted_images", *CLIENT_ID.lock().await);
     tokio::fs::create_dir_all(encrypted_images_dir.clone())
@@ -585,7 +584,7 @@ async fn handle_image_response(response: ImageResponse, image_name: String) {
     // Use client_ip to construct the file name
     let encrypted_image_path = format!(
         "{}/{}_encrypted.png",
-        encrypted_images_dir, image_name
+        encrypted_images_dir, response.image_name
     );
     if let Err(e) = fs::write(&encrypted_image_path, &response.encrypted_image_data).await {
         eprintln!(
@@ -595,7 +594,7 @@ async fn handle_image_response(response: ImageResponse, image_name: String) {
     } else {
         println!(
             "Client: image {} encrypted and saved to {}",
-            image_name, encrypted_image_path
+            response.image_name, encrypted_image_path
         );
     }
 
