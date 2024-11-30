@@ -40,10 +40,11 @@ pub async fn run_middleware(
             Request::ImageRequest(req) => {
                 encrypt_image_from_server(tx.clone(), req, server_ips_clone).await;
             },
-            Request::ListContents => {
-                
+            Request::DOS(req) => {
+                let request_id = Uuid::new_v4().to_string();
+                send_request_receive_response_client_server(tx.clone(), server_ips.clone(), req.clone().client_id,  Request::DOS(req), request_id).await;
             },
-            Request::HandShake(req) =>{
+            Request::HandShake(_req) =>{
                 // let request_id = Uuid::new_v4().to_string();
                 // send_request_receive_response_client_server(tx.clone(), server_ips.clone(), req.client_ip.clone(), Request::HandShake(req), request_id).await; 
             }
@@ -174,6 +175,11 @@ async fn send_request_receive_response_client_server(
                                 },
                                 Response::SignOut(res) => {
                                     if let Err(e) = tx.clone().send(Response::SignOut(res)).await {
+                                        eprintln!("Client Middleware: Failed to send response to client: {}", e);
+                                    }
+                                },
+                                Response::DOS(res) => {
+                                    if let Err(e) = tx.clone().send(Response::DOS(res)).await {
                                         eprintln!("Client Middleware: Failed to send response to client: {}", e);
                                     }
                                 },

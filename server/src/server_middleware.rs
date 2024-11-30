@@ -23,14 +23,6 @@ const ALPHABET_IDS: [char; 62] = [
     'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
 ];
 
-/// Struct representing a client in the system.
-#[derive(Serialize, Deserialize, Debug)]
-struct Client {
-    client_id: String,
-    ip: String,
-    online: bool,
-    images: Vec<String>, // Images owned by the client
-}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub enum Request {
@@ -39,7 +31,7 @@ pub enum Request {
     SignOut(SignOutRequest),
     ImageRequest(ImageRequest),
     HandShake(HandShakeRequest),
-    ListContents,
+    DOS(DOSRequest),
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -69,6 +61,18 @@ pub struct ImageRequest {
 pub struct HandShakeRequest {
     pub client_ip: String,
 }
+#[derive(Clone, Serialize, Deserialize)]
+pub struct DOSRequest {
+    pub client_id: String,
+}
+
+/// Struct representing am online client (helpful for DOS response)
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct OnlineClient {
+    pub client_id: String,
+    pub client_ip: String,
+    pub images: Vec<String>, // Names of Images owned by the client
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub enum Response {
@@ -77,7 +81,7 @@ pub enum Response {
     SignOut {success: bool},
     ImageResponse(ImageResponse),
     HandShake {success: bool},
-    List {clients: Vec<String>},
+    DOS {online_clients: Vec<OnlineClient>},
     Error {message: String},
 }
 
@@ -375,21 +379,37 @@ async fn handle_connection(
                                     // Decrease load after processing is complete
                                     state.lock().await.decrement_load();
                                 }
-                                Request::HandShake(req) => { // Not needed. was a trial for a null request. 
-                                    let response = Response::HandShake { success: true };
-                                    // Serialize and send the response back to the client
+                                Request::DOS(req) => {
+                                    let response = dos.get_online_clients(req.client_id).await;
                                     match &response {
-                                        Response::HandShake { success } => {
-                                            //nothing to do
+                                        Response::DOS { online_clients } => {
+                                            println!("In server middleware response for DOS. Returned {:?}", online_clients)
                                         },
                                         _ => {},
                                     }
+                                    // Serialize and send the response back to the client
                                     let serialized_response = serde_json::to_string(&response).unwrap();
                                     stream.write_all(&serialized_response.as_bytes())
                                     .await
                                     .expect("Failed to send the client id back to the client middleware");
                                     // Decrease load after processing is complete
                                     state.lock().await.decrement_load();
+                                },
+                                Request::HandShake( _req) => { // Not needed. was a trial for a null request. 
+                                    // let response = Response::HandShake { success: true };
+                                    // // Serialize and send the response back to the client
+                                    // match &response {
+                                    //     Response::HandShake { success } => {
+                                    //         //nothing to do
+                                    //     },
+                                    //     _ => {},
+                                    // }
+                                    // let serialized_response = serde_json::to_string(&response).unwrap();
+                                    // stream.write_all(&serialized_response.as_bytes())
+                                    // .await
+                                    // .expect("Failed to send the client id back to the client middleware");
+                                    // // Decrease load after processing is complete
+                                    // state.lock().await.decrement_load();
                                 },
                                 Request::ImageRequest(data) => {
                                     println!("I am an image request");
@@ -791,10 +811,50 @@ impl DoS {
         Response::SignOut { success: true }
     }
 
-    /// Lists all clients and their statuses.
-    fn list_contents(&self) -> Response {
-       // placeholder
-         Response::List {clients: vec![]}
+    // get online clients, their ips, and images
+    async fn get_online_clients(&self, requester_id: String) -> Response {
+        let mut online_clients = Vec::new();
+        let mut clients_ids = Vec::new();
+        if let Ok(mut entries) = tokio::fs::read_dir("DOS").await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let path = entry.path();
+                if let Some(file_name) = path.file_name() {
+                    if let Some(file_name) = file_name.to_str() {
+                        if file_name.ends_with(".txt") {
+                            clients_ids.push(file_name.to_string().replace(".txt", ""));
+                        }
+                    }
+                }
+            }
+        }
+        for client_id in clients_ids {
+            if client_id == requester_id {
+                continue; // don't return the requester info
+            }
+            let content = read_from_file(&format!("DOS/{}.txt", client_id)).await.unwrap();
+            let mut lines = content.lines();
+            if let Some(first_line) = lines.next() {
+                let mut parts = first_line.split(',');
+                let status = parts.next().unwrap_or(""); // 1 for online, 0 for offline
+                let ip = parts.next().unwrap_or("");
+                if status == "1" {
+                    let mut images = Vec::new();
+                    // images are in the second line seperated by commas
+                    if let Some(second_line) = lines.next() {
+                        let parts = second_line.split(',');
+                        for part in parts {
+                            images.push(part.to_string());
+                        }
+                    }
+                    online_clients.push(OnlineClient {
+                        client_id: client_id,
+                        client_ip: ip.to_string(),
+                        images,
+                    });
+                }
+            }
+        }
+        Response::DOS { online_clients }
     }
 }
 

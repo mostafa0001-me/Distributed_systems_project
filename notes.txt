@@ -22,11 +22,6 @@ Adjust the code to do the following:
 main branch or stokio branch --> resize image for low resolution
 =============================================
 1. Handle request DoS
-2. Sign up should be done automatically when you open a terminal. (our choice)
-So, we need to remove it form the menu and call it automatically when we open a new terminal
-3. How are you gonna store the ID returned from the DOS? In a folder (client0, client1, client2) ?
-4. How are you gonna downsample the client images?
-5. How are you gonna store the DoS later for retrieval? Google Drive, how would you store the downsampled image?
 6. Should we add Arc<Mutex<>> to the DoS?
 7. For the Dos, you should only list the online users (except me)
 8. Name of the image is unique per client (handled from the client side)

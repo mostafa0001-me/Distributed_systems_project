@@ -27,7 +27,7 @@ pub enum Request {
     SignIn(SignInRequest),
     SignOut(SignOutRequest),
     ImageRequest(ImageRequest),
-    ListContents,
+    DOS(DOSRequest),
     HandShake(HandShakeRequest),
 }
 
@@ -54,10 +54,21 @@ pub struct ImageRequest { // Add the name of the image
     pub request_id: String,
     pub image_data: Vec<u8>,
 }
+#[derive(Clone, Serialize, Deserialize)]
+pub struct DOSRequest {
+    pub client_id: String,
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct HandShakeRequest {
     pub client_ip: String,
+}
+/// Struct representing am online client (helpful for DOS response)
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct OnlineClient {
+    pub client_id: String,
+    pub client_ip: String,
+    pub images: Vec<String>, // Names of Images owned by the client
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -67,6 +78,7 @@ pub enum Response {
     SignOut(SignOutResponse),
     ImageResponse(ImageResponse),
     HandShake(HandShakeResponse),
+    DOS(DOSResponse),
     Error {message: String},
 }
 
@@ -89,6 +101,10 @@ pub struct SignOutResponse {
 pub struct ImageResponse {
     pub request_id: String,
     pub encrypted_image_data: Vec<u8>,
+}
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct DOSResponse {
+    pub online_clients: Vec<OnlineClient>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -198,7 +214,7 @@ pub async fn run_client(
         println!("1. Sign up");
         println!("2. Sign in");
         println!("3. Sign Out");
-        println!("4. Request DOS");
+        println!("4. Request DOS, list all online peers with their IP and images");
         println!("5. Encrypt an image from the server");
         println!("6. Request an image from another client");
         println!("7. Edit access rights of a client");
@@ -257,6 +273,7 @@ pub async fn run_client(
                     println!("Please sign in first.");
                     continue;
                 }
+                request_dos(tx.clone(), CLIENT_ID.lock().await.clone()).await;
                 let mut rx_lock = rx.lock().await;
                 receive_response_from_middleware(&mut rx_lock, "not needed".to_string()).await;
             }
@@ -371,6 +388,16 @@ async fn sign_out(
     send_request_to_middleware(tx, request).await;
 }
 
+async fn request_dos(
+    tx:  mpsc::Sender<Request>,
+    client_id: String,
+) {
+    let request = Request::DOS(DOSRequest{
+        client_id: client_id.clone(),
+    });
+    send_request_to_middleware(tx, request).await;
+}
+
 async fn hand_shake(
     tx:  mpsc::Sender<Request>,
     client_ip: String,
@@ -434,6 +461,16 @@ async fn receive_response_from_middleware(
                 }else{
                     println!("Client sign out failed. Attempt again");
                 }
+            },
+            Response::DOS(res) => {
+                if res.online_clients.is_empty() {
+                    println!("No online clients found.");
+                } else {
+                    println!("Online clients:");
+                    for client in res.online_clients {
+                        println!("Client ID: {}, Client IP: {}, Images: {:?}", client.client_id, client.client_ip, client.images);
+                }
+            }
             },
             Response::ImageResponse(res) => {
                 handle_image_response(res, image_name).await;
