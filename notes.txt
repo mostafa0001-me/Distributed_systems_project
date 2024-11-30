@@ -31,23 +31,17 @@ The DOS should enforce these updates on the viewers once they are back online (P
 10. Ctrl + c --> before killing the process must send to the DOS it is offline.
 11. .gitignore
 12. -load after handling the request
-13. For find_avaialable_server --> it needs client_ip and request_id. Is this the case in all requests?
+
 14. review ownership
-15. client waits till the server encrypts (mitigated)
-16. viewer waits until the owner approves (mitigated)
 17. Tefa's bug: owner doesn't receive a new request except when initiating a new connection <=  Mitigated
-18. save image name when I receive it as a viewer (mitigated)
 19. viewer enter owner id not ip (make the id small) -- I think IP address would be much easier and we get it from DOS anyways
 20. handling requesting the image (same image with different ids) -- I will leave for now for the sake of testing
-21. request extra views without going into the view option
 22. implement edit access rights as an owner for any viewer
 23. Do we need to save the decrypted image to temporary file? -yes to avoid the headache of dependencies
 24. choose which pending requests to handle
-25. Image requests assume signle image (mitigated)
 26. Image name unique per clinet <= it should act instead of ID
 27. Denial "Failed to deserialize extra views response from owner."
-28. First sing in doesn't go to middleware
-29. We used client ip in the past as id (with images and other things). Need to change ig
+29. We used client ip in the past as id (with images and other things). Need to change ig <= changed for image request
 30. Maybe add functionalities to view my own images?
 
 
