@@ -13,11 +13,11 @@ use std::process;
 use std::thread;
 use std::sync::Arc;
 use serde_json;
-use std::fs::{File, OpenOptions};
-use std::io::{Write, BufRead, BufReader};
-use nanoid::{nanoid};
+//use std::fs::{File, OpenOptions};
+// use std::io::Write; please stick with tokio
+use nanoid::nanoid;
 
-const alphabet_ids: [char; 62] = [
+const ALPHABET_IDS: [char; 62] = [
     '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 
     'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
     'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
@@ -29,7 +29,7 @@ struct Client {
     client_id: String,
     ip: String,
     online: bool,
-    images: Vec<Image>, // Images owned by the client
+    images: Vec<String>, // Images owned by the client
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -50,6 +50,8 @@ pub struct SignUpRequest {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SignInRequest {
     pub client_id: String,
+    pub client_ip: String,
+    pub reply_back: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -225,7 +227,7 @@ pub async fn run_server_middleware(
         let rng = Arc::clone(&rng);
 
         let election_listener_address2 = election_address.clone();
-        let mut dos = DoS::new();
+        let mut dos = DoS::new().await;
         task::spawn(async move {
             handle_connection(
                 stream,
@@ -325,7 +327,7 @@ async fn handle_connection(
                             match request {
                                 Request::SignUp(req) => {
                                     println!("In server middleware request {}", req.client_ip);
-                                    let response: Response = dos.register_client(req.client_ip);
+                                    let response: Response = dos.register_client(req.client_ip).await;
                                     match &response {
                                         Response::SignUp { client_id } => {
                                             println!("In server middleware response {}", client_id)
@@ -342,10 +344,10 @@ async fn handle_connection(
                                     state.lock().await.decrement_load();
                                 },
                                 Request::SignIn(req) => {
-                                    let response = dos.sign_in_client(req.client_id);
+                                    let response = dos.sign_in_client(req.client_id, req.client_ip).await;
                                     match &response {
                                         Response::SignIn { success } => {
-                                            println!("In server middleware response {}", success)
+                                            println!("In server middleware response for singn in {}", success)
                                         },
                                         _ => {},
                                     }
@@ -357,6 +359,22 @@ async fn handle_connection(
                                     // Decrease load after processing is complete
                                     state.lock().await.decrement_load();
                                 },
+                                Request::SignOut(req) =>{
+                                    let response = dos.sign_out_client(req.client_id).await;
+                                    match &response {
+                                        Response::SignOut { success } => {
+                                            println!("In server middleware response for sign out {}", success)
+                                        },
+                                        _ => {},
+                                    }
+                                    // Serialize and send the response back to the client
+                                    let serialized_response = serde_json::to_string(&response).unwrap();
+                                    stream.write_all(&serialized_response.as_bytes())
+                                    .await
+                                    .expect("Failed to send the client id back to the client middleware");
+                                    // Decrease load after processing is complete
+                                    state.lock().await.decrement_load();
+                                }
                                 Request::HandShake(req) => { // Not needed. was a trial for a null request. 
                                     let response = Response::HandShake { success: true };
                                     // Serialize and send the response back to the client
@@ -680,119 +698,144 @@ async fn listen_for_election_messages(address: String, state: Arc<Mutex<ServerSt
     }
 }
 
-/// Struct representing a downsampled image with a unique ID
-#[derive(Serialize, Deserialize, Debug)]
-struct Image {
-    id: u64,
-    image_data: Vec<u8>, // Placeholder for downsampled image data
-}
+// /// Struct representing a downsampled image with a unique ID
+// #[derive(Serialize, Deserialize, Debug)]
+// struct Image {
+//     id: u64,
+//     image_data: Vec<u8>, // Placeholder for downsampled image data
+// }
 
 // Shared State of the Directory of Service (DoS)
 pub struct DoS {
-    clients: HashMap<String, Client>, // Map of Client ID -> Client struct
 }
 
 impl DoS {
-    pub fn new() -> Self {
-        Self { clients: HashMap::new() }
+    pub async  fn new() -> Self {
+        tokio::fs::create_dir_all("DOS")
+        .await
+        .expect("Failed to create 'my_images' directory");
+        DoS {}
     }
     
     // Registers a new client and assigns a unique ID.
-    fn register_client(&mut self, ip: String) -> Response {
-        let client_id = nanoid!(8, &alphabet_ids); // small unique_ID of 8 characters for easier testing.
-        self.clients.insert(
-            client_id.clone(),
-            Client {
-                client_id: client_id.clone(),
-                ip,
-                online: true,
-                images: vec![],
-            },
-        );
-        // Append the client_id to a file.
-        if let Err(err) = append_to_file("client_ids.txt", &client_id) {
+    async fn register_client(&mut self, ip: String) -> Response {
+        let mut client_id = nanoid!(8, &ALPHABET_IDS); // small unique_ID of 8 characters for easier testing.
+        let mut file_path = format!("DOS/{}.txt", client_id);
+        while does_file_exist(&file_path).await { // ensure id is not used in a previous session.
+            client_id = nanoid!(8, &ALPHABET_IDS);
+            file_path = format!("DOS/{}.txt", client_id);
+        }
+        // create the client file, and mark it as online and put its ip address.
+        // The file name is the client id
+        // first line is either 1,client_ip (if online) or 0,cliiet_ip (if offline)
+        let content = format!("1,{}\n", ip);
+        if let Err(err) = append_to_file(&file_path, &content).await {
             eprintln!("Failed to write client_id to file: {}", err);
         }
         Response::SignUp {client_id}
     }
 
     /// Signs in an existing client and marks it as online.
-    fn sign_in_client(&mut self, client_id: String) -> Response {
-        // Check if the client_id exists in the client_ids.txt file
-        // commented for now
-        // if !client_id_exists_in_file("client_ids.txt", &client_id) {
-        //     return Response::Error {
-        //         message: "Client ID not found.".to_string(),
-        //     };
-        // }
-
-        // If the client ID exists in the file, mark it online in the directory of service
-        if let Some(client) = self.clients.get_mut(&client_id) {
-            client.online = true;
-         //   Response::SignIn { success: true }
+    async fn sign_in_client(&mut self, client_id: String, client_ip: String) -> Response {
+        let file_path = format!("DOS/{}.txt", client_id);
+        // check if the client id exists in the directory of service
+        if !does_file_exist(&file_path).await {
+            return Response::SignIn { success: false };
         }
-        Response::SignIn { success: true } // for now it is always true
-        //  else {
-        //     // The ID exists in the file but not in the current state
-        //     Response::Error {
-        //         message: "Client ID exists in the file but is not registered in memory.".to_string(),
-        //     }
-        // }
+        // read the file.
+        let content = read_from_file(&file_path).await.unwrap();
+        let lines = content.lines();
+        // change first line to be 1,client_ip
+        let mut new_content = format!("1,{}\n", client_ip);
+        for line in lines.skip(1) {
+            new_content.push_str(line);
+        }
+        if let Err(err) = write_to_file(&file_path, &new_content).await {
+            eprintln!("Failed to write sign in to file: {}", err);
+            Response::SignIn { success: false };
+        }
+        Response::SignIn { success: true } 
     }
 
     /// Signs out an existing client and marks it as offline.
-    fn sign_out_client(&mut self, client_id: String) -> Response {
-        if let Some(client) = self.clients.get_mut(&client_id) {
-            client.online = false;
-            Response::SignOut{success: true}
-        } else {
-            Response::Error {
-                message: "Client ID not found.".to_string(),
+    async fn sign_out_client(&mut self, client_id: String) -> Response {
+        let file_path = format!("DOS/{}.txt", client_id);
+        // check if the client id exists in the directory of service
+        if !does_file_exist(&file_path).await {
+            return Response::SignOut { success: false };
+        }
+        let content = read_from_file(&file_path).await.unwrap();
+        let mut lines = content.lines();
+
+        if let Some(first_line) = lines.next() {
+            // Split the first line to extract the IP
+            let mut parts = first_line.split(',');
+            let _status = parts.next();
+            let ip = parts.next().unwrap_or("");
+
+            // Create new content with updated first line
+            let mut new_content = format!("0,{}\n", ip);
+
+            // Append the rest of the lines
+            for line in lines {
+                new_content.push_str(line);
+                new_content.push('\n');
+            }
+            // Write the new content back to the file
+            if let Err(err) = write_to_file(&file_path, &new_content).await {
+                eprintln!("Failed to write sign out to file: {}", err);
+                Response::SignOut { success: false };
             }
         }
+       
+        Response::SignOut { success: true }
     }
 
     /// Lists all clients and their statuses.
     fn list_contents(&self) -> Response {
-        let clients: Vec<String> = self
-            .clients
-            .iter()
-            .map(|(_, client)| {
-                format!(
-                    "ID: {}, IP: {}, Online: {}, Images: {}",
-                    client.client_id,
-                    client.ip,
-                    client.online,
-                    client.images.len()
-                )
-            })
-            .collect();
-        Response::List { clients }
+       // placeholder
+         Response::List {clients: vec![]}
     }
 }
 
 /// Appends a string to a file, creating the file if it doesn't exist.
-fn append_to_file(file_path: &str, content: &str) -> std::io::Result<()> {
-    let mut file = OpenOptions::new()
-        .create(true) // Create the file if it doesn't exist
-        .append(true) // Append to the file
-        .open(file_path)?;
+async fn append_to_file(file_path: &str, content: &str) -> tokio::io::Result<()> {
+    let mut file = tokio::fs::OpenOptions::new()
+    .create(true) // Create the file if it doesn't exist
+    .append(true) // Append to the file
+    .open(file_path)
+    .await?;
 
-    // Write the content followed by a newline
-    writeln!(file, "{}", content)
-}
-
-/// Checks if a given client ID exists in the file.
-fn client_id_exists_in_file(file_path: &str, client_id: &str) -> bool {
-    if let Ok(file) = File::open(file_path) {
-        let reader = BufReader::new(file);
-        for line in reader.lines() {
-            if let Ok(existing_id) = line {
-                if existing_id.trim() == client_id {
-                    return true;
-                }
-            }
-        }
+    file.write_all(content.as_bytes()).await?; // Write the content to the file
+    Ok(())
     }
-    false
+
+async fn does_file_exist(file_path: &str) -> bool {
+    tokio::fs::metadata(file_path).await.is_ok()
 }
+
+async fn read_from_file(file_path: &str) -> tokio::io::Result<String> {
+    let mut file = tokio::fs::File::open(file_path).await?;
+    let mut content = String::new();
+    file.read_to_string(&mut content).await?;
+    Ok(content)
+}
+
+async fn write_to_file(file_path: &str, content: &str) -> tokio::io::Result<()> {
+    tokio::fs::write(file_path, content).await
+}
+
+// /// Checks if a given client ID exists in the file.
+// fn client_id_exists_in_file(file_path: &str, client_id: &str) -> bool {
+//     if let Ok(file) = File::open(file_path) {
+//         let reader = BufReader::new(file);
+//         for line in reader.lines() {
+//             if let Ok(existing_id) = line {
+//                 if existing_id.trim() == client_id {
+//                     return true;
+//                 }
+//             }
+//         }
+//     }
+//     false
+// }

@@ -5,6 +5,7 @@ use tokio::fs;
 use uuid::Uuid;
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
+use std::fmt::format;
 use std::time::Instant;
 use once_cell::sync::Lazy;
 use std::io::{self};
@@ -15,8 +16,10 @@ use tokio::net::{TcpListener, TcpStream};
 use image::DynamicImage;
 use steganography::decoder::Decoder;
 use std::sync::Arc;
-use std::io::Write;
 use tokio::task;
+
+use tokio::fs::File;
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub enum Request {
@@ -36,6 +39,8 @@ pub struct SignUpRequest {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SignInRequest {
     pub client_id: String,
+    pub client_ip: String, // to keep track if the ip has changed
+    pub reply_back: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -138,6 +143,17 @@ static PENDING_REQUESTS: Lazy<Arc<Mutex<Vec<PendingRequest>>>> = Lazy::new(|| {
     Arc::new(Mutex::new(Vec::new()))
 });
 
+// add a signed_up and signed_in global flags
+static SIGNED_UP: Lazy<Mutex<bool>> = Lazy::new(|| {
+    Mutex::new(false)
+});
+static SIGNED_IN: Lazy<Mutex<bool>> = Lazy::new(|| {
+    Mutex::new(false)
+});
+
+static CLIENT_ID: Lazy<Mutex<String>> = Lazy::new(|| {
+    Mutex::new("".to_string())
+});
 // Helper function to write a length-prefixed message
 async fn write_length_prefixed_message(stream: &mut TcpStream, data: &[u8], close_connection: bool) -> tokio::io::Result<()> {
     // Write the length as a 4-byte unsigned integer in big-endian
@@ -198,22 +214,34 @@ pub async fn run_client(
 
         match choice {
             "1" => {
+                if *SIGNED_UP.lock().await {
+                    println!("Client already signed up.");
+                }else{
                 sign_up(tx.clone(), client_ip.clone()).await;
                 let mut rx_lock = rx.lock().await;
                 receive_response_from_middleware(&mut rx_lock, "not needed".to_string()).await;
+                }
             }
             "2" => {
-                match read_id_from_file("client_id.txt").await {
-                    Ok(client_id) => {
-                        println!("Read client ID: {}", client_id);
-                        sign_in(tx.clone(), client_id.clone()).await;
-                    },
-                    Err(e) => eprintln!("Failed to read client ID: {}", e),
-                }
-                // let mut rx_lock = rx.lock().await;
-                // receive_response_from_middleware(&mut rx_lock, "not needed".to_string()).await;
-                // don't uncomment until we resolve the null request.
-                print!("Finished signing in!");
+                if *SIGNED_IN.lock().await {
+                    println!("Client already signed in.");
+                }else{
+                    println!("Please enter your client ID. If you don't have one, sign up first.");
+                    let mut client_id = String::new();
+                    io::stdin()
+                        .read_line(&mut client_id)
+                        .expect("Failed to read input");
+                    client_id = client_id.trim().to_string();
+                    let client_dir = format!("Client_{}", client_id);
+                    if !does_dir_exist(&client_dir).await {
+                        println!("Client ID not found. Please sign up first or bring your client directory to this machine."); 
+                        continue;
+                    }
+                    *CLIENT_ID.lock().await = client_id.clone();
+                    sign_in(tx.clone(), client_id.clone(), client_ip.clone(), true).await;   
+                    let mut rx_lock = rx.lock().await;
+                    receive_response_from_middleware(&mut rx_lock, "not needed".to_string()).await;
+            }
             }
             "3" => {
                 let mut rx_lock = rx.lock().await;
@@ -239,15 +267,7 @@ pub async fn run_client(
             "5" => {
                 // Request an image from another client
                 request_image_from_client().await;
-                match read_id_from_file("client_id.txt").await { 
-                    // dummy way to solve the communication issue
-                    // you need to send request to a the server after sennding an image response to the client
-                    Ok(client_id) => {
-                        sign_in(tx.clone(), client_id.clone()).await; 
-                    },
-                    Err(e) => eprintln!("Failed to read client ID: {}", e),
-                } 
-                
+                sign_in(tx.clone(), CLIENT_ID.lock().await.clone(), client_ip.clone(), false).await;
             }
             "6" => {
                 // Placeholder for Edit access rights of a client
@@ -274,14 +294,18 @@ pub async fn run_client(
                 println!("Invalid choice.");
             }
         }
-        match read_id_from_file("client_id.txt").await { 
-            // dummy way to solve the communication issue
-            // you need to send request to a the server after sennding an image response to the client
-            Ok(client_id) => {
-                sign_in(tx.clone(), client_id.clone()).await;
-            },
-            Err(e) => eprintln!("Failed to read client ID: {}", e),
+        // dummy way to solve the communication issue
+        for _ in 0..1 {
+            sign_in(tx.clone(), "dummy".to_string(), client_ip.clone(), false).await;
+            let shared_images_file = format!("Client_{}/shared_with_me/shared_images.txt", *CLIENT_ID.lock().await);
+            let _file = match File::open(shared_images_file).await {
+                Ok(file) => file,
+                Err(_) => {
+                    continue;
+                } };
         }
+        //        sign_in(tx.clone(), "dummy".to_string(), client_ip.clone(), false).await;
+        
      //   hand_shake(tx.clone(), client_ip.clone()).await;
     }
 }
@@ -299,9 +323,13 @@ async fn sign_up(
 async fn sign_in(
     tx:  mpsc::Sender<Request>,
     client_id: String,
+    client_ip: String,
+    reply_back: bool,
 ) {
     let request = Request::SignIn(SignInRequest{
         client_id: client_id.clone(),
+        client_ip: client_ip.clone(),
+        reply_back,
     });
     send_request_to_middleware(tx, request).await;
 }
@@ -350,13 +378,16 @@ async fn receive_response_from_middleware(
             Response::SignUp(res) => {
                 handle_sign_up_response(res).await;
             },
-            // Response::SignIn(res) => {
-            //     if res.success {
-            //         println!("Client signed in successfully");
-            //     }else{
-            //         println!("Client sign in failed. Attempt again");
-            //     }
-            // },
+            // commented as we don't receive in sign in (for the null check)
+            Response::SignIn(res) => {
+                if res.success {
+                    *SIGNED_UP.lock().await = true;
+                    *SIGNED_IN.lock().await = true;
+                    println!("Client signed in successfully");
+                }else{
+                    println!("Client sign in failed. Attempt again");
+                }
+            },
             Response::ImageResponse(res) => {
                 handle_image_response(res, image_name).await;
             },
@@ -368,11 +399,28 @@ async fn receive_response_from_middleware(
 }
 
 async fn handle_sign_up_response(response: SignUpResponse) {
-    println!("Client registered with ID: {}", response.client_id);
+    let client_dir = format!("Client_{}", response.client_id);
+    println!("Client registered with ID: {} and a new directory: {} is created.", response.client_id, client_dir);
+    println!("Plase, remmeber your client ID to be able to sign in again.");
+    tokio::fs::create_dir_all(client_dir.clone()).await.expect("Failed to create directory");
+    let image_dir = format!("{}/my_images", client_dir.clone());
+    tokio::fs::create_dir_all(image_dir)
+    .await
+    .expect("Failed to create 'my_images' directory");
+    println!("Please put your images in the 'my_images' directory inslide {} directory.", client_dir);
+    *SIGNED_UP.lock().await = true;
+    *SIGNED_IN.lock().await = true; // we can sign the user in after signing up
+    *CLIENT_ID.lock().await = response.client_id;
+    // // Call the append_to_file function
+    // if let Err(e) = append_to_file("client_id.txt", &response.client_id).await {
+    //     eprintln!("Failed to write to file: {}", e);
+    // }
+}
 
-    // Call the append_to_file function
-    if let Err(e) = append_to_file("client_id.txt", &response.client_id).await {
-        eprintln!("Failed to write to file: {}", e);
+async fn does_dir_exist(dir_path: &str) -> bool {
+    match fs::metadata(dir_path).await {
+        Ok(metadata) => metadata.is_dir(),
+        Err(_) => false,
     }
 }
 
@@ -390,12 +438,8 @@ async fn encrypt_image_from_server(
     tx: mpsc::Sender<Request>,
     client_ip: String,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    // Create the "my_images" directory if it doesn't exist
-    fs::create_dir_all("my_images")
-        .await
-        .expect("Failed to create 'my_images' directory");
-
-    println!("Please enter the image file name (without .png) to encrypt (from 'my_images' folder):");
+    let image_dir = format!("Client_{}/my_images", *CLIENT_ID.lock().await);
+    println!("Please enter the image file name (without .png) to encrypt (from {} folder):", image_dir);
     let mut image_file_name = String::new();
     io::stdin()
         .read_line(&mut image_file_name)
@@ -403,7 +447,7 @@ async fn encrypt_image_from_server(
     let image_file_name = image_file_name.trim();
 
     // Build the image path
-    let image_path = format!("my_images/{}.png", image_file_name);
+    let image_path = format!("{}/{}.png", image_dir, image_file_name);
 
     // Read the image data
     let image_data = match fs::read(&image_path).await {
@@ -449,14 +493,15 @@ async fn encrypt_image_from_server(
 // handle image response from server
 async fn handle_image_response(response: ImageResponse, image_name: String) {
     // Create the "Encrypted_images" directory if it doesn't exist
-    fs::create_dir_all("Encrypted_images")
+    let encrypted_images_dir = format!("Client_{}/Encrypted_images", *CLIENT_ID.lock().await);
+    tokio::fs::create_dir_all(encrypted_images_dir.clone())
         .await
         .expect("Failed to create 'Encrypted_images' directory");
 
     // Use client_ip to construct the file name
     let encrypted_image_path = format!(
-        "Encrypted_images/{}_encrypted.png",
-        image_name
+        "{}/{}_encrypted.png",
+        encrypted_images_dir, image_name
     );
     if let Err(e) = fs::write(&encrypted_image_path, &response.encrypted_image_data).await {
         eprintln!(
@@ -465,8 +510,8 @@ async fn handle_image_response(response: ImageResponse, image_name: String) {
         );
     } else {
         println!(
-            "Client: Encrypted image {} saved!",
-            &response.request_id
+            "Client: image {} encrypted and saved to {}",
+            image_name, encrypted_image_path
         );
     }
 
@@ -488,7 +533,7 @@ async fn handle_image_response(response: ImageResponse, image_name: String) {
         );
 
         // Write to log file
-        let log_file_path = "roundtrip_times.txt";
+        let log_file_path = format!("Client_{}/roundtrip_times.txt", *CLIENT_ID.lock().await);
         let mut log_file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -579,12 +624,13 @@ pub async fn request_image_from_client() {
 
 async fn handle_client_image_response(response: ClientToClientResponse) {
     // Create the "shared_with_me" directory if it doesn't exist
-    fs::create_dir_all("shared_with_me")
+    let shared_dir = format!("Client_{}/shared_with_me", *CLIENT_ID.lock().await);
+    fs::create_dir_all(shared_dir.clone())
         .await
         .expect("Failed to create 'shared_with_me' directory");
 
     // Use the image_id to generate the image filename
-    let image_path = format!("shared_with_me/{}_from_{}.png", response.image_id, response.shared_by_ip);
+    let image_path = format!("{}/{}_from_{}.png", shared_dir, response.image_id, response.shared_by_ip);
 
     // Save the encrypted image
     fs::write(&image_path, &response.image_data)
@@ -594,7 +640,7 @@ async fn handle_client_image_response(response: ClientToClientResponse) {
     println!("Received image from {}.", response.shared_by_ip);
 
     // Save the image info
-    let shared_images_file = "shared_with_me/shared_images.txt";
+    let shared_images_file = format!("{}/shared_images.txt", shared_dir);
     let log_entry = format!(
         "Image ID: {}, Image Path: {}, Shared By: {}\n",
         response.image_id, image_path, response.shared_by_ip
@@ -618,7 +664,7 @@ async fn choose_image() -> Result<SharedImageInfo, Box<dyn std::error::Error>> {
     use tokio::fs::File;
     use tokio::io::{AsyncBufReadExt, BufReader};
 
-    let shared_images_file = "shared_with_me/shared_images.txt";
+    let shared_images_file = format!("Client_{}/shared_with_me/shared_images.txt", *CLIENT_ID.lock().await);
 
     let file = File::open(shared_images_file).await?;
 
@@ -686,12 +732,9 @@ async fn choose_image() -> Result<SharedImageInfo, Box<dyn std::error::Error>> {
 
 
 async fn view_shared_images() {
-    use tokio::fs::File;
-    use tokio::io::{AsyncBufReadExt, BufReader};
 
-    // Open the shared_images.txt file
-    let shared_images_file = "shared_with_me/shared_images.txt";
 
+    let shared_images_file = format!("Client_{}/shared_with_me/shared_images.txt", *CLIENT_ID.lock().await);
     let file = match File::open(shared_images_file).await {
         Ok(file) => file,
         Err(_) => {
@@ -1238,10 +1281,16 @@ async fn send_response_to_requester(
     image_name: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Construct the image file path based on the requested image name
-    let image_file_path = format!("Encrypted_images/{}_encrypted.png", image_name.clone());
+    let image_file_path = format!("Client_{}/Encrypted_images/{}_encrypted.png", *CLIENT_ID.lock().await, image_name.clone());
 
     // Read the encrypted image file
-    let mut image = image::open(&image_file_path)?;
+    let mut image = match image::open(&image_file_path) {
+        Ok(img) => img,
+        Err(e) => {
+            eprintln!("Failed to open image file {}: {}", image_file_path, e);
+            return Err(Box::new(e));
+        }
+    };
 
     // Embed the allowed_views into the image
     embed_allowed_views_in_image(&mut image, allowed_views)?;

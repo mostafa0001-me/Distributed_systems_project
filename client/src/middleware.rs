@@ -112,7 +112,12 @@ async fn send_request_receive_response_client_server(
 
             // Serialize the request to send over TCP
             let serialized_request = serde_json::to_string(&request).unwrap();
-   
+
+            // check if request is a sign in request
+            let mut sign_in_reply_back = false;
+            if let Request::SignIn(req) = request {
+                sign_in_reply_back = req.reply_back;
+                }
             // Send the serialized data to the server
             if let Err(e) = stream.write_all(serialized_request.as_bytes()).await {
                 eprintln!("Client Middleware: Failed to send request to server: {}", e);
@@ -140,12 +145,16 @@ async fn send_request_receive_response_client_server(
                                     }
                                 },
                                 Response::SignIn(res) => {
-                                    // if let Err(e) = tx.clone().send(Response::SignIn(res)).await {
-                                    //     eprintln!("Client Middleware: Failed to send response to client: {}", e);
-                                    // }
+                                    //check if sing in request has reply back
+                                    if sign_in_reply_back{
+                                        if let Err(e) = tx.clone().send(Response::SignIn(res)).await {
+                                            eprintln!("Client Middleware: Failed to send response to client: {}", e);
+                                        }
+                                    }
                                    // don't uncomment until we resolve the null request.
                                 },
                                 Response::ImageResponse(res) => {
+                                    println!("Client Middleware: Received ImageResponse response from server.");
                                     if let Err(e) = tx.clone().send(Response::ImageResponse(res)).await {
                                         eprintln!("Client Middleware: Failed to send response to client: {}", e);
                                     }
