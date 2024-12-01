@@ -31,6 +31,7 @@ pub enum Request {
     ImageRequest(ImageRequest),
     DOS(DOSRequest),
     HandShake(HandShakeRequest),
+    Push(PushRequest),
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -56,6 +57,7 @@ pub struct ImageRequest {
     pub request_id: String,
     pub image_name: String, // we assume it is unique per clinet.
     pub image_data: Vec<u8>,
+    
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct DOSRequest {
@@ -83,6 +85,7 @@ pub enum Response {
     HandShake(HandShakeResponse),
     DOS(DOSResponse),
     Error {message: String},
+    Push(PushResponse),
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -112,9 +115,40 @@ pub struct DOSResponse {
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct PushResponse {
+    pub success: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct HandShakeResponse {
     pub success: bool
 }
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct PushRequest {
+    pub target_client_id: String,
+    pub image_name: String,
+    pub new_views: u32,
+    pub pushed_by: String,
+}
+
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SharedImageInfo2 {
+    pub image_id: String,
+    pub image_path: String,
+    pub shared_by: String,
+    pub shared_with_ip: String,
+    pub shared_with_id: String,
+    pub allowed_views: u32,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct AccessRightUpdate {
+    pub image_name: String,
+    pub new_views: u32,
+}
+
 
 // HashMap to store timestamps for each request using Tokio's Mutex
 static REQUEST_TIMESTAMPS: Lazy<Mutex<HashMap<String, Instant>>> = Lazy::new(|| {
@@ -125,6 +159,7 @@ static REQUEST_TIMESTAMPS: Lazy<Mutex<HashMap<String, Instant>>> = Lazy::new(|| 
 pub enum RequestType {
     ImageRequest,
     ExtraViewsRequest,
+    AccessRightUpdate,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -132,6 +167,8 @@ pub struct ClientToClientRequest {
     pub request_type: RequestType,
     pub requested_views: u32,
     pub image_id: Option<String>, // Added image_id for extra views request
+    pub requester_ip: Option<String>,
+    pub requester_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -252,6 +289,7 @@ pub async fn run_client(
                         .expect("Failed to read input");
                     client_id = client_id.trim().to_string();
                     let client_dir = format!("Client_{}", client_id);
+                    println!("Current Directory: {}", client_dir);
                     if !does_dir_exist(&client_dir).await {
                         println!("Client ID not found. Please sign up first or bring your client directory to this machine."); 
                         continue;
@@ -290,7 +328,7 @@ pub async fn run_client(
                 let client_id = CLIENT_ID.lock().await.clone();
                // println!("Here2 {}", client_id);
                 encrypt_image_from_server(tx.clone(), client_id).await;
-                println!("Here2");
+     //           println!("Here2");
                 let rx_clone = Arc::clone(&rx);
                 tokio::spawn(async move {
                         let mut rx_lock = rx_clone.lock().await; // Lock the Mutex to access the receiver
@@ -303,16 +341,26 @@ pub async fn run_client(
                     println!("Please sign in first.");
                     continue;
                 }
-                request_image_from_client().await;
+                request_image_from_client(CLIENT_ID.lock().await.clone(), client_ip.clone()).await;
                 sign_in(tx.clone(), CLIENT_ID.lock().await.clone(), client_ip.clone(), false).await;
             }
-            "7" => { // Placeholder for Edit access rights of a client
-                if !*SIGNED_IN.lock().await {
-                    println!("Please sign in first.");
-                    continue;
-                }
-                println!("Edit access rights functionality not yet implemented.");
+            "7" => {
+    if !*SIGNED_IN.lock().await {
+        println!("Please sign in first.");
+        continue;
+    }
+    match edit_rights(tx.clone(), Arc::clone(&rx)).await {
+        Ok(_) => println!("Access rights update completed."),
+        Err(e) => {
+            if e.to_string() == "No shared images found." {
+                println!("You haven't shared any images yet.");
+            } else {
+                eprintln!("Failed to edit access rights: {}", e);
             }
+        }
+    }
+
+		}
             "8" => {// View shared images
                 if !*SIGNED_IN.lock().await {
                     println!("Please sign in first.");
@@ -635,7 +683,7 @@ async fn handle_image_response(response: ImageResponse) {
     }
 }
 
-pub async fn request_image_from_client() {
+pub async fn request_image_from_client(requester_ip: String, requester_id: String) {
     println!("Enter the other client's IP address and port (format x.x.x.x:port):");
     let mut address = String::new();
     io::stdin()
@@ -643,7 +691,6 @@ pub async fn request_image_from_client() {
         .expect("Failed to read input");
     let address = address.trim().to_string();
 
-    // Ask for the name of the image
     println!("Enter the name of the image you want to request (without .png):");
     let mut image_name = String::new();
     io::stdin()
@@ -658,50 +705,37 @@ pub async fn request_image_from_client() {
         .expect("Failed to read input");
     let views: u32 = views_input.trim().parse().expect("Please enter a valid number");
 
-    // Create a request message with the image name
-    let image_name_temp = image_name.clone();
     let image_request = ClientToClientRequest {
         request_type: RequestType::ImageRequest,
         requested_views: views,
-        image_id: Some(image_name_temp),  // Send the image name as the image_id
+        image_id: Some(image_name.clone()),
+        requester_ip: Some(requester_ip),
+        requester_id: Some(requester_id),
     };
 
-    // Serialize the request message
-    let serialized_request =
-        bincode::serialize(&image_request).expect("Failed to serialize request");
-
-    // Connect to the other client
     match TcpStream::connect(&address).await {
         Ok(mut stream) => {
-            // Send the request using length-prefixed protocol
+            let serialized_request = bincode::serialize(&image_request)
+                .expect("Failed to serialize request");
+
             if let Err(e) = write_length_prefixed_message(&mut stream, &serialized_request, false).await {
-                eprintln!("Failed to send request to other client: {}", e);
+                eprintln!("Failed to send request: {}", e);
                 return;
             }
-            println!("Image Request sent to other client at {}.", address);
 
-            // Spawn a background task to receive the image
             let image_name_clone = image_name.clone();
             tokio::spawn(async move {
                 match read_length_prefixed_message(&mut stream, true).await {
-                Ok(buffer) => {
-                    // Deserialize the response
-                    if let Ok(response) = bincode::deserialize::<ClientToClientResponse>(&buffer) {
-                        handle_client_image_response(response).await;
-                    } else {
-                        eprintln!("Failed to deserialize response from other client.");
+                    Ok(buffer) => {
+                        if let Ok(response) = bincode::deserialize::<ClientToClientResponse>(&buffer) {
+                            handle_client_image_response(response).await;
+                        }
                     }
+                    Err(e) => eprintln!("Failed to receive response: {}", e),
                 }
-                Err(e) => {
-                    eprintln!("Failed to receive response from other client: {}", e);
-                    return;
-                }
-            }
             });
         }
-        Err(e) => {
-            eprintln!("Failed to connect to other client at {}: {}", address, e);
-        }
+        Err(e) => eprintln!("Failed to connect to {}: {}", address, e),
     }
 }
 
@@ -713,7 +747,7 @@ async fn handle_client_image_response(response: ClientToClientResponse) {
         .expect("Failed to create 'shared_with_me' directory");
 
     // Use the image_id to generate the image filename
-    let image_path = format!("{}/{}_from_{}.png", shared_dir, response.image_id, response.shared_by_ip);
+    let image_path = format!("{}/{}.png", shared_dir, response.image_id);
 
     // Save the encrypted image
     fs::write(&image_path, &response.image_data)
@@ -726,7 +760,7 @@ async fn handle_client_image_response(response: ClientToClientResponse) {
     let shared_images_file = format!("{}/shared_images.txt", shared_dir);
     let log_entry = format!(
         "Image ID: {}, Image Path: {}, Shared By: {}\n",
-        response.image_id, image_path, response.shared_by_ip
+        response.image_id, image_path, response.shared_by_ip //to be changed to id
     );
 
     let mut log_file = OpenOptions::new()
@@ -965,6 +999,8 @@ async fn request_extra_views(image_info: SharedImageInfo) {
         request_type: RequestType::ExtraViewsRequest,
         requested_views,
         image_id: Some(image_info.image_id.clone()),
+        requester_ip: None,    // New field set to None
+        requester_id: None,    // New field set to None
     };
 
     // Serialize the request
@@ -1217,19 +1253,49 @@ async fn handle_client_request(
     socket: TcpStream,
 ) {
     let requester_ip = socket.peer_addr().unwrap().to_string();
-
-    // Deserialize the request
+  //  println!("Checked");
     if let Ok(request) = bincode::deserialize::<ClientToClientRequest>(&buffer) {
-        let pending_request = PendingRequest {
-            request,
-            requester_ip: requester_ip.clone(),
-            socket,
-        };
+   //     println!("Checked2");
+        match request.request_type {
+            RequestType::ImageRequest | RequestType::ExtraViewsRequest => {
+ //               println!("Checked3");
+                let pending_request = PendingRequest {
+                    request,
+                    requester_ip: requester_ip.clone(),
+                    socket,
+                };
 
-        // Add to PENDING_REQUESTS
-        let mut pending_requests = PENDING_REQUESTS.lock().await;
-        pending_requests.push(pending_request);
-        println!("Added a new pending request from {}", requester_ip);
+                let mut pending_requests = PENDING_REQUESTS.lock().await;
+                pending_requests.push(pending_request);
+                println!("Added a new pending request from {}", requester_ip);
+            }
+            RequestType::AccessRightUpdate => {
+          //      println!("Checked4");
+                let image_id = request.image_id.clone().unwrap_or_else(|| "unknown".to_string());
+                    println!("New views shared for image: {}", image_id);
+                    
+                    let image_path = format!(
+                        "Client_{}/shared_with_me/{}.png", 
+                        *CLIENT_ID.lock().await,
+                        image_id
+                    );
+                    println!("image path: {}", image_path);
+                    match image::open(&image_path) {
+                        Ok(mut image) => {
+                            if let Err(e) = embed_allowed_views_in_image(&mut image, request.requested_views) {
+                                eprintln!("Failed to update allowed views: {}", e);
+                            } else {
+                                if let Err(e) = image.save(&image_path) {
+                                    eprintln!("Failed to save updated image: {}", e);
+                                } else {
+                                    println!("Successfully updated views for image {}", image_id);
+                                }
+                            }
+                        }
+                        Err(e) => eprintln!("Failed to open image for update: {}", e),
+                    }
+            }
+        }
     } else {
         eprintln!("Failed to deserialize client request.");
     }
@@ -1352,7 +1418,8 @@ async fn handle_pending_requests(client_ip: String) {
                         println!("Denial sent.");
                     }
                 }
-            }
+            },
+            RequestType::AccessRightUpdate => todo!()
         }
     }
 }
@@ -1363,10 +1430,12 @@ async fn send_response_to_requester(
     client_ip: String,
     image_name: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Construct the image file path based on the requested image name
-    let image_file_path = format!("Client_{}/Encrypted_images/{}_encrypted.png", *CLIENT_ID.lock().await, image_name.clone());
+    let image_file_path = format!(
+        "Client_{}/Encrypted_images/{}_encrypted.png", 
+        *CLIENT_ID.lock().await, 
+        image_name.clone()
+    );
 
-    // Read the encrypted image file
     let mut image = match image::open(&image_file_path) {
         Ok(img) => img,
         Err(e) => {
@@ -1375,32 +1444,165 @@ async fn send_response_to_requester(
         }
     };
 
-    // Embed the allowed_views into the image
     embed_allowed_views_in_image(&mut image, allowed_views)?;
 
-    // Save the modified image to a buffer
     let mut image_buffer = Vec::new();
     image.write_to(&mut image_buffer, image::ImageOutputFormat::PNG)?;
 
-    // Generate an image_id
-    //let image_id = Uuid::new_v4().to_string();
-    // Create a response struct that includes the image data and the shared_by_ip
+    // Create and save sharing record
+    if let (Some(requester_id), Some(requester_ip)) = (
+        pending_request.request.requester_id,
+        pending_request.request.requester_ip
+    ) {
+        let sharing_info = SharedImageInfo2 {
+            image_id: image_name.clone(),
+            image_path: image_file_path.clone(),
+            shared_by: client_ip.clone(),
+            shared_with_ip: requester_ip,
+            shared_with_id: requester_id,
+            allowed_views,
+        };
+
+        // Save sharing info to file
+        let sharing_file = format!("Client_{}/shared_images_info.txt", *CLIENT_ID.lock().await);
+        let sharing_record = serde_json::to_string(&sharing_info)?;
+       // tokio::fs::write(&sharing_file, sharing_record.as_bytes()).await?;
+        append_to_file(&sharing_file, &sharing_record).await?;
+    }
+
     let response = ClientToClientResponse {
         image_data: image_buffer,
-        shared_by_ip: client_ip.clone(),
-        image_id: image_name.clone(),
+        shared_by_ip: client_ip,
+        image_id: image_name,
     };
 
-    // Serialize the response
     let serialized_response = bincode::serialize(&response)?;
-
-    // Send the serialized response using length-prefixed protocol
     let mut socket = pending_request.socket;
     write_length_prefixed_message(&mut socket, &serialized_response, true).await?;
     socket.flush().await?;
     Ok(())
 }
+pub async fn edit_rights(tx: mpsc::Sender<Request>, rx: Arc<Mutex<mpsc::Receiver<Response>>>) -> Result<(), Box<dyn std::error::Error>> {
+    let sharing_file = format!("Client_{}/shared_images_info.txt", *CLIENT_ID.lock().await);
+    
+    let content = tokio::fs::read_to_string(&sharing_file).await.map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::Other, "No shared images found")
+    })?;
 
+    let shared_images: Vec<SharedImageInfo2> = content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+
+    if shared_images.is_empty() {
+        return Err("No shared images found".into());
+    }
+
+    println!("\nShared Images:");
+    for (index, info) in shared_images.iter().enumerate() {
+        println!("\n{}. Image: {}", index + 1, info.image_id);
+        println!("   Shared with Client ID: {}", info.shared_with_ip); // switcedh by mistake
+        println!("   Shared with IP: {}", info.shared_with_id);
+     //   println!("   Current allowed views: {}", info.allowed_views);
+    }
+
+    println!("\nEnter the number of the image to edit rights (or 'q' to quit):");
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let input = input.trim();
+
+    if input.eq_ignore_ascii_case("q") {
+        return Ok(());
+    }
+
+    let choice: usize = input.parse().map_err(|_| "Invalid selection")?;
+    if choice == 0 || choice > shared_images.len() {
+        return Err("Invalid selection".into());
+    }
+
+    let selected_image = &shared_images[choice - 1];
+
+   // println!("\nCurrent allowed views: {}", selected_image.allowed_views);
+    println!("Enter new number of views:");
+    let mut new_views_input = String::new();
+    io::stdin().read_line(&mut new_views_input)?;
+    let new_views: u32 = new_views_input.trim().parse()?;
+
+    // Request DOS to check if client is online
+    request_dos(tx.clone(), CLIENT_ID.lock().await.clone()).await;
+    let mut rx_lock = rx.lock().await;
+    
+    let mut client_online = false;
+    let mut client_ip = None;
+
+    if let Some(Response::DOS(dos_response)) = rx_lock.recv().await {
+        for client in dos_response.online_clients {
+            if client.client_id == selected_image.shared_with_ip {
+                client_online = true;
+                client_ip = Some(client.client_ip);
+                break;
+            }
+        }
+    }
+
+    // Update local record regardless of client's online status
+    let mut updated_images = shared_images.clone();
+    updated_images[choice - 1].allowed_views = new_views;
+    let updated_content: String = updated_images
+        .iter()
+        .map(|info| serde_json::to_string(info).unwrap() + "\n")
+        .collect();
+    tokio::fs::write(&sharing_file, updated_content).await?;
+
+    if client_online {
+        if let Some(ip) = client_ip {
+            let update_request = ClientToClientRequest {
+                request_type: RequestType::AccessRightUpdate,
+                requested_views: new_views,
+                image_id: Some(selected_image.image_id.clone()),
+                requester_ip: None,
+                requester_id: None,
+            };
+
+            match TcpStream::connect(&ip).await {
+                Ok(mut stream) => {
+                    let serialized_request = bincode::serialize(&update_request)?;
+                    match write_length_prefixed_message(&mut stream, &serialized_request, true).await {
+                        Ok(_) => println!("Access rights update sent successfully to online client"),
+                        Err(e) => println!("Failed to send update request: {}", e),
+                    }
+                }
+                Err(_) => println!("Failed to connect to client despite being online"),
+            }
+        }
+    } else {
+        println!("Client is offline. Sending push request to server...");
+        
+        let push_request = Request::Push(PushRequest {
+            target_client_id: selected_image.shared_with_ip.clone(),
+            image_name: selected_image.image_id.clone(),
+            new_views,
+            pushed_by: CLIENT_ID.lock().await.clone(),
+        });
+
+        match tx.send(push_request).await {
+            Ok(_) => println!("Push request sent to server. Update will be delivered when client comes online."),
+            Err(e) => println!("Failed to send push request to server: {}", e),
+        }
+
+        // Wait for push response
+        if let Some(Response::Push(push_response)) = rx_lock.recv().await {
+            if push_response.success {
+                println!("Server successfully queued the update");
+            } else {
+                println!("Server failed to queue the update");
+            }
+        }
+    }
+
+    Ok(())
+}
 async fn send_extra_views_response(
     mut socket: TcpStream,
     image_id: String,

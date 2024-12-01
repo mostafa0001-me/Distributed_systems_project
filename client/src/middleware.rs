@@ -47,7 +47,27 @@ pub async fn run_middleware(
             Request::HandShake(_req) =>{
                 // let request_id = Uuid::new_v4().to_string();
                 // send_request_receive_response_client_server(tx.clone(), server_ips.clone(), req.client_ip.clone(), Request::HandShake(req), request_id).await; 
-            }
+            },
+            Request::Push(req) => {
+                let request_id = Uuid::new_v4().to_string();
+                send_request_receive_response_client_server(
+                    tx.clone(), 
+                    server_ips.clone(), 
+                    req.target_client_id.clone(),  // Using target client ID for routing
+                    Request::Push(req), 
+                    request_id
+                ).await;
+            },
+            Request::Push(req) => {
+                let request_id = Uuid::new_v4().to_string();
+                send_request_receive_response_client_server(
+                    tx.clone(), 
+                    server_ips.clone(), 
+                    req.target_client_id.clone(),  // Using target client ID for routing
+                    Request::Push(req), 
+                    request_id
+                ).await;
+            },
         }
     }
 }
@@ -115,6 +135,12 @@ async fn send_request_receive_response_client_server(
                 Request::SignIn(_) => {
                     // Do not print anything for SignIn requests
                 },
+                Request::Push(_) => {
+                    println!(
+                        "Client Middleware: Sending push request for client {} to server {}.",
+                        client_ip_id, stream.peer_addr().unwrap()
+                    );
+                },
                 _ => {
                     // Print IP of server
                     println!(
@@ -181,6 +207,11 @@ async fn send_request_receive_response_client_server(
                                 Response::DOS(res) => {
                                     if let Err(e) = tx.clone().send(Response::DOS(res)).await {
                                         eprintln!("Client Middleware: Failed to send response to client: {}", e);
+                                    }
+                                },
+                                Response::Push(push_response) => {
+                                    if let Err(e) = tx.clone().send(Response::Push(push_response)).await {
+                                        eprintln!("Client Middleware: Failed to forward push response: {}", e);
                                     }
                                 },
                                 _ => println!("Unexpected response Middleware. {:?}", response),

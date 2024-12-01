@@ -16,6 +16,8 @@ use serde_json;
 //use std::fs::{File, OpenOptions};
 // use std::io::Write; please stick with tokio
 use nanoid::nanoid;
+use std::path::Path;
+
 
 const ALPHABET_IDS: [char; 62] = [
     '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 
@@ -32,7 +34,30 @@ pub enum Request {
     ImageRequest(ImageRequest),
     HandShake(HandShakeRequest),
     DOS(DOSRequest),
+    Push(PushRequest),
 }
+
+#[derive(Clone, Serialize, Deserialize)]
+pub enum RequestType {
+    ImageRequest,
+    ExtraViewsRequest,
+    AccessRightUpdate,
+}
+
+pub struct DOSSync {
+    dos_port: String,
+    other_servers: Vec<(String, String)>, // (election_port, dos_port) pairs
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ClientToClientRequest {
+    pub request_type: RequestType,
+    pub requested_views: u32,
+    pub image_id: Option<String>, // Added image_id for extra views request
+    pub requester_ip: Option<String>,
+    pub requester_id: Option<String>,
+}
+
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SignUpRequest {
@@ -67,6 +92,14 @@ pub struct DOSRequest {
     pub client_id: String,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+pub struct PushRequest {
+    pub target_client_id: String,
+    pub image_name: String,
+    pub new_views: u32,
+    pub pushed_by: String,
+}
+
 /// Struct representing am online client (helpful for DOS response)
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct OnlineClient {
@@ -84,6 +117,7 @@ pub enum Response {
     HandShake {success: bool},
     DOS {online_clients: Vec<OnlineClient>},
     Error {message: String},
+    Push(PushResponse),
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -99,6 +133,11 @@ pub struct ImageResponse {
     pub request_id: String,
     pub image_name: String,
     pub encrypted_image_data: Vec<u8>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct PushResponse {
+    pub success: bool,
 }
 
 // A structure to hold the server's id, a weighted sum of its load and cpu utilization.
@@ -133,6 +172,199 @@ impl ServerId {
 
     fn get_id(&self) -> u32 {
         self.id
+    }
+}
+
+impl DOSSync {
+    pub async fn new(dos_port: String, other_servers: Vec<(String, String)>) -> Self {
+        Self {
+            dos_port,
+            other_servers,
+        }
+    }
+
+    pub async fn start_dos_listener(&self) {
+        println!("Attempting to bind DOS listener to {}", self.dos_port);
+        
+        let listener = TcpListener::bind(&self.dos_port)
+            .await
+            .expect("Failed to bind DOS sync listener");
+
+        println!("DOS sync listener successfully started on {}", self.dos_port);
+
+        while let Ok((mut stream, addr)) = listener.accept().await {
+            println!("Received DOS sync connection from {}", addr);
+            
+            let mut buffer = [0; 1024];
+            if let Ok(n) = stream.read(&mut buffer).await {
+                let message = String::from_utf8_lossy(&buffer[..n]);
+                println!("Received DOS sync message: {}", message);
+                
+                match message.trim() {
+                    "HELLO" => {
+                        println!("Processing HELLO request");
+                        self.handle_hello_request(&mut stream).await;
+                    }
+                    msg if msg.starts_with("FILE:") => {
+                        println!("Processing file update request");
+                        self.handle_file_update(&mut stream, message.to_string()).await;
+                    }
+                    _ => println!("Unknown message type received"),
+                }
+            }
+        }
+    }
+
+    async fn handle_hello_request(&self, stream: &mut TcpStream) {
+        if let Ok(mut entries) = tokio::fs::read_dir("DOS").await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                if let Ok(content) = tokio::fs::read(entry.path()).await {
+                    let file_name = entry.file_name().to_string_lossy().to_string();
+                    // Send file count as a header
+                    let file_size = content.len() as u32;
+                    let message = format!("FILE:{}\n{}\n", file_name, file_size);
+                    
+                    // Send header and wait for acknowledgment
+                    if let Err(e) = stream.write_all(message.as_bytes()).await {
+                        println!("Failed to send file header: {}", e);
+                        continue;
+                    }
+
+                    // Wait for header acknowledgment
+                    let mut ack_buf = [0; 3];
+                    match stream.read_exact(&mut ack_buf).await {
+                        Ok(_) if &ack_buf == b"ACK" => {
+                            // Send file content
+                            if let Err(e) = stream.write_all(&content).await {
+                                println!("Failed to send file content: {}", e);
+                                continue;
+                            }
+
+                            // Wait for content acknowledgment
+                            let mut ack_buf = [0; 3];
+                            if let Ok(_) = stream.read_exact(&mut ack_buf).await {
+                                if &ack_buf != b"ACK" {
+                                    println!("Invalid content acknowledgment received");
+                                    continue;
+                                }
+                            }
+                        }
+                        _ => {
+                            println!("Failed to receive header acknowledgment");
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Send completion marker and close connection
+        let _ = stream.write_all(b"COMPLETE").await;
+        let _ = stream.shutdown().await;
+    }
+
+    async fn handle_file_update(&self, stream: &mut TcpStream, header: String) {
+        if header.starts_with("FILE:") {
+            let parts: Vec<&str> = header.trim().split('\n').collect();
+            if parts.len() != 2 {
+                println!("Invalid file header format");
+                return;
+            }
+
+            let file_name = parts[0]["FILE:".len()..].trim();
+            let expected_size: u32 = parts[1].parse().unwrap_or(0);
+            
+            // Send acknowledgment for header
+            let _ = stream.write_all(b"ACK").await;
+
+            let file_path = Path::new("DOS").join(file_name);
+            let mut content = Vec::with_capacity(expected_size as usize);
+            let mut received = 0;
+
+            while received < expected_size {
+                let mut buffer = [0; 8192];
+                match stream.read(&mut buffer).await {
+                    Ok(n) if n > 0 => {
+                        content.extend_from_slice(&buffer[..n]);
+                        received += n as u32;
+                    }
+                    _ => break,
+                }
+            }
+
+            if received == expected_size {
+                if let Err(e) = tokio::fs::write(file_path, content).await {
+                    println!("Failed to write file: {}", e);
+                } else {
+                    // Send acknowledgment for successful file write
+                    let _ = stream.write_all(b"ACK").await;
+                }
+            }
+        }
+    }
+
+    pub async fn broadcast_file_update(&self, file_name: &str) {
+        let file_path = Path::new("DOS").join(file_name);
+        if let Ok(content) = tokio::fs::read(&file_path).await {
+            for (_, dos_address) in &self.other_servers {
+                println!("Attempting to broadcast update to {}", dos_address);
+                if let Ok(mut stream) = TcpStream::connect(dos_address).await {
+                    // Send file header with size
+                    let message = format!("FILE:{}\n{}\n", file_name, content.len());
+                    let _ = stream.write_all(message.as_bytes()).await;
+
+                    // Wait for header acknowledgment
+                    let mut ack_buf = [0; 3];
+                    if let Ok(_) = stream.read_exact(&mut ack_buf).await {
+                        if &ack_buf == b"ACK" {
+                            // Send file content
+                            if let Err(e) = stream.write_all(&content).await {
+                                println!("Failed to send file content: {}", e);
+                                continue;
+                            }
+
+                            // Wait for content acknowledgment
+                            let mut ack_buf = [0; 3];
+                            if let Ok(_) = stream.read_exact(&mut ack_buf).await {
+                                println!("File successfully sent to {}", dos_address);
+                            }
+                        }
+                    }
+                    let _ = stream.shutdown().await;
+                }
+            }
+        }
+    }
+
+    pub async fn initial_sync(&self) {
+        for (_, dos_address) in &self.other_servers {
+            println!("Attempting initial sync with {}", dos_address);
+            if let Ok(mut stream) = TcpStream::connect(dos_address).await {
+                println!("Connected to {}. Sending HELLO", dos_address);
+                let _ = stream.write_all(b"HELLO").await;
+                
+                loop {
+                    let mut header_buf = [0; 1024];
+                    match stream.read(&mut header_buf).await {
+                        Ok(n) if n > 0 => {
+                            let message = String::from_utf8_lossy(&header_buf[..n]);
+                            if message.trim() == "COMPLETE" {
+                                println!("Completed sync with {}", dos_address);
+                                break;
+                            }
+                            if message.starts_with("FILE:") {
+                                self.handle_file_update(&mut stream, message.to_string()).await;
+                            }
+                        }
+                        _ => break,
+                    }
+                }
+                return;
+            } else {
+                println!("Failed to connect to {} for initial sync", dos_address);
+            }
+        }
+        println!("No other servers available for initial DOS sync");
     }
 }
 
@@ -193,47 +425,80 @@ impl ServerState {
     }
 }
 
+async fn write_length_prefixed_message(stream: &mut TcpStream, data: &[u8], close_connection: bool) -> tokio::io::Result<()> {
+    // Write the length as a 4-byte unsigned integer in big-endian
+    let length = data.len() as u32;
+    let length_bytes = length.to_be_bytes();
+    stream.write_all(&length_bytes).await?;
+    stream.write_all(data).await?;
+    if close_connection {
+        if let Err(e) = stream.shutdown().await {
+            eprintln!("Failed to shutdown socket after writing: {}", e);
+        }
+    }
+    Ok(())
+}
+
+
 pub async fn run_server_middleware(
     server_address: String,
     election_address: String,
+    dos_port: String,
     server_tx: Sender<Vec<u8>>,
     server_rx: Arc<Mutex<tokio::sync::mpsc::Receiver<Vec<u8>>>>,
-    other_server_election_addresses: Vec<String>,
+    other_servers: Vec<(String, String)>,
 ) {
+    // Extract election addresses for existing functionality
+    let other_server_election_addresses: Vec<String> = other_servers
+        .iter()
+        .map(|(election_addr, _)| election_addr.clone())
+        .collect();
+
+    // Initialize DOS synchronization
+    let dos_sync = Arc::new(DOSSync::new(dos_port.clone(), other_servers).await);
+        println!("Starting DOS sync listener on port {}", dos_port);
+
+    
+    // Start the DOS listener in background
+    let dos_sync_for_listener = Arc::clone(&dos_sync);
+    task::spawn(async move {
+        dos_sync_for_listener.start_dos_listener().await;
+    });
+    
+    // Perform initial DOS synchronization
+        println!("Performing initial DOS synchronization...");
+
+    dos_sync.initial_sync().await;
+
+    println!("Binding main server to {}", server_address);
+
     let listener = TcpListener::bind(&server_address)
         .await
         .expect("Could not bind to server address");
     let state = Arc::new(Mutex::new(ServerState::new()));
 
-    // Start a task to listen for election messages
+    // Start election message listener
     let election_listener_state = Arc::clone(&state);
-    //let election_listener_address = format!("0.0.0.0:{}", election_port);
     let election_listener_address = election_address.clone();
     task::spawn(listen_for_election_messages(
         election_listener_address,
         election_listener_state,
     ));
 
-    // // Start a task to clean old requests periodically
-    // let state_for_cleanup = Arc::clone(&state);
-    // task::spawn(async move {
-    //     loop {
-    //         tokio::time::sleep(Duration::from_secs(200)).await; //adjust time
-    //         state_for_cleanup.lock().await.clean_old_requests();
-    //     }
-    // });
-
     let rng = Arc::new(Mutex::new(StdRng::seed_from_u64(process::id() as u64)));
 
     while let Ok((stream, _)) = listener.accept().await {
         let server_tx = server_tx.clone();
-        let server_rx: Arc<Mutex<tokio::sync::mpsc::Receiver<Vec<u8>>>> = Arc::clone(&server_rx);
+        let server_rx = Arc::clone(&server_rx);
         let state = Arc::clone(&state);
         let other_server_election_addresses = other_server_election_addresses.clone();
         let rng = Arc::clone(&rng);
-
         let election_listener_address2 = election_address.clone();
-        let mut dos = DoS::new().await;
+        let dos_sync = Arc::clone(&dos_sync);
+        
+        // Initialize DoS with synchronization capability
+        let mut dos = DoS::new(dos_sync).await;
+
         task::spawn(async move {
             handle_connection(
                 stream,
@@ -446,6 +711,26 @@ async fn handle_connection(
                                     // Decrease load after processing is complete
                                     state.lock().await.decrement_load();
                                 },
+                                Request::Push(push_req) => {
+    println!("Received push request for client {}", push_req.target_client_id);
+    let response = dos.handle_push_request(push_req).await;
+    
+    match &response {
+        Response::Push(push_response) => {
+            println!("Push request processed with success: {}", push_response.success)
+        },
+        _ => {},
+    }
+
+    // Serialize and send the response back to the client middleware
+    let serialized_response = serde_json::to_string(&response).unwrap();
+    stream.write_all(&serialized_response.as_bytes())
+        .await
+        .expect("Failed to send push response back to the client middleware");
+    
+    // Decrease load after processing is complete
+    state.lock().await.decrement_load();
+},
                                 _ => {},
                             }
                         },
@@ -731,14 +1016,15 @@ async fn listen_for_election_messages(address: String, state: Arc<Mutex<ServerSt
 
 // Shared State of the Directory of Service (DoS)
 pub struct DoS {
+	dos_sync: Arc<DOSSync>,
 }
 
 impl DoS {
-    pub async  fn new() -> Self {
+    pub async  fn new(dos_sync: Arc<DOSSync>) -> Self {
         tokio::fs::create_dir_all("DOS")
         .await
         .expect("Failed to create 'my_images' directory");
-        DoS {}
+        DoS { dos_sync }
     }
     
     // Registers a new client and assigns a unique ID.
@@ -756,29 +1042,63 @@ impl DoS {
         if let Err(err) = append_to_file(&file_path, &content).await {
             eprintln!("Failed to write client_id to file: {}", err);
         }
+        self.dos_sync.broadcast_file_update(&format!("{}.txt", client_id)).await;
         Response::SignUp {client_id}
     }
 
     /// Signs in an existing client and marks it as online.
     async fn sign_in_client(&mut self, client_id: String, client_ip: String) -> Response {
         let file_path = format!("DOS/{}.txt", client_id);
-        // check if the client id exists in the directory of service
         if !does_file_exist(&file_path).await {
             return Response::SignIn { success: false };
         }
-        // read the file.
+
         let content = read_from_file(&file_path).await.unwrap();
-        let lines = content.lines();
-        // change first line to be 1,client_ip
-        let mut new_content = format!("1,{}\n", client_ip);
-        for line in lines.skip(1) {
-            new_content.push_str(line);
+        let mut lines: Vec<String> = content.lines().map(String::from).collect();
+        let mut updates = Vec::new();
+
+        // Collect and remove update lines
+        lines.retain(|line| {
+            if line.starts_with("UPDATE:") {
+                updates.push(line.clone());
+                false
+            } else {
+                true
+            }
+        });
+
+        // Update online status
+        lines[0] = format!("1,{}", client_ip);
+        let new_content = lines.join("\n");
+        if let Err(_) = write_to_file(&file_path, &new_content).await {
+            return Response::SignIn { success: false };
         }
-        if let Err(err) = write_to_file(&file_path, &new_content).await {
-            eprintln!("Failed to write sign in to file: {}", err);
-            Response::SignIn { success: false };
+        self.dos_sync.broadcast_file_update(&format!("{}.txt", client_id)).await;
+        // Process pending updates
+        for update in updates {
+            let parts: Vec<&str> = update.trim_start_matches("UPDATE:").split(',').collect();
+            if parts.len() == 3 {
+                let (image_name, new_views, _pushed_by) = (parts[0], parts[1], parts[2]);
+                if let Ok(new_views) = new_views.parse::<u32>() {
+                    // Connect to client and send update
+                    if let Ok(mut stream) = TcpStream::connect(&client_ip).await {
+                        let update_request = ClientToClientRequest {
+                            request_type: RequestType::AccessRightUpdate,
+                            requested_views: new_views,
+                            image_id: Some(image_name.to_string()),
+                            requester_ip: None,
+                            requester_id: None,
+                        };
+
+                        if let Ok(serialized_request) = bincode::serialize(&update_request) {
+                            let _ = write_length_prefixed_message(&mut stream, &serialized_request, true).await;
+                        }
+                    }
+                }
+            }
         }
-        Response::SignIn { success: true } 
+
+        Response::SignIn { success: true }
     }
 
     /// Signs out an existing client and marks it as offline.
@@ -811,6 +1131,7 @@ impl DoS {
                 Response::SignOut { success: false };
             }
         }
+        self.dos_sync.broadcast_file_update(&format!("{}.txt", client_id)).await;
        
         Response::SignOut { success: true }
     }
@@ -846,6 +1167,7 @@ impl DoS {
         if let Err(err) = write_to_file(&file_path, &new_content).await {
             eprintln!("Failed to write updated client file: {}", err);
         }
+        self.dos_sync.broadcast_file_update(&format!("{}.txt", client_id)).await;
     }
 
     // get online clients, their ips, and images
@@ -892,6 +1214,27 @@ impl DoS {
             }
         }
         Response::DOS { online_clients }
+    }
+    async fn handle_push_request(&self, request: PushRequest) -> Response {
+        let file_path = format!("DOS/{}.txt", request.target_client_id);
+        let mut content = match read_from_file(&file_path).await {
+            Ok(content) => content,
+            Err(_) => return Response::Push(PushResponse { success: false }),
+        };
+
+        // Add pending update to the client's file
+        let update_line = format!("UPDATE:{},{},{}\n", 
+            request.image_name, 
+            request.new_views,
+            request.pushed_by
+        );
+        content.push_str(&update_line);
+
+        if let Err(_) = write_to_file(&file_path, &content).await {
+            return Response::Push(PushResponse { success: false });
+        }
+	self.dos_sync.broadcast_file_update(&format!("{}.txt", request.target_client_id)).await;
+        Response::Push(PushResponse { success: true })
     }
 }
 

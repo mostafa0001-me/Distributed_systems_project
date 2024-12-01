@@ -1,2 +1,0 @@
-Request ID: 1c6fe0ee-518c-462c-a2cb-50296154ba10, Round Trip Time: 6.206103792s
-Request ID: e140f593-f5b8-4262-9fda-24bede968869, Round Trip Time: 5.598771505s

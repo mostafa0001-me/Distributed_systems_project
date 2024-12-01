@@ -9,30 +9,37 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
-    // Read server address and load request port from command-line arguments
     let args: Vec<String> = env::args().collect();
-    if args.len() < 3 {
-        eprintln!("Usage: <program> <server_address> <load_request_port> [other_servers...]");
+    if args.len() < 4 {
+        eprintln!("Usage: <program> <server_address> <load_request_port> <dos_port> [other_servers_election_port dos_port...]");
         return;
     }
 
     let server_address = args[1].clone();
-    let load_request_address: String = args[2].parse().expect("Invalid load request port");
-    let other_servers: Vec<String> = args.iter().skip(3).cloned().collect();
+    let load_request_address = args[2].parse().expect("Invalid load request port");
+    let dos_port = args[3].parse().expect("Invalid DOS port");
+
+    // Parse other servers into pairs of (election_port, dos_port)
+    let mut other_servers = Vec::new();
+    let mut i = 4;
+    while i < args.len() - 1 {
+        other_servers.push((args[i].clone(), args[i + 1].clone()));
+        i += 2;
+    }
 
     let (middleware_to_server_tx, middleware_to_server_rx) = mpsc::channel(32);
     let (server_to_middleware_tx, server_to_middleware_rx) = mpsc::channel(32);
-
-    // Wrapping the receiver with Arc and Mutex to match expected types in server_middleware
     let server_to_middleware_rx = Arc::new(Mutex::new(server_to_middleware_rx));
+
     // Start the server middleware
     let server_middleware_handle = task::spawn(async move {
         server_middleware::run_server_middleware(
-        server_address,
-        load_request_address,
-        middleware_to_server_tx,
-        server_to_middleware_rx,
-        other_servers, 
+            server_address,
+            load_request_address,
+            dos_port,              // Fixed: removed type annotation
+            middleware_to_server_tx,
+            server_to_middleware_rx,
+            other_servers,
         ).await;
     });
 

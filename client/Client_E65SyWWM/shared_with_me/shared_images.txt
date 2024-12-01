@@ -1,2 +1,0 @@
-Image ID: sea, Image Path: Client_E65SyWWM/shared_with_me/sea_from_127.0.0.1:8080.png, Shared By: 127.0.0.1:8080
-Image ID: nature, Image Path: Client_E65SyWWM/shared_with_me/nature_from_127.0.0.1:8080.png, Shared By: 127.0.0.1:8080

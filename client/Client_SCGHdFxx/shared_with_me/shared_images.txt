@@ -1,1 +1,0 @@
-Image ID: cat, Image Path: Client_SCGHdFxx/shared_with_me/cat_from_127.0.0.1:8081.png, Shared By: 127.0.0.1:8081
