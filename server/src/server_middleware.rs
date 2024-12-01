@@ -454,6 +454,10 @@ pub async fn run_server_middleware(
         .map(|(election_addr, _)| election_addr.clone())
         .collect();
 
+    tokio::fs::create_dir_all("DOS")
+    .await
+    .expect("Failed to create 'my_images' directory");
+
     // Initialize DOS synchronization
     let dos_sync = Arc::new(DOSSync::new(dos_port.clone(), other_servers).await);
         println!("Starting DOS sync listener on port {}", dos_port);
