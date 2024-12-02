@@ -1,0 +1,52 @@
+
+
+client --> cargo run 127.0.0.1:8080 (127.0.0.1:8081) (client port for client-to-client communication) 127.0.0.1:5001 (server port)
+server --> cargo run 127.0.0.1:5001 (client port) 127.0.0.1:8000 (election port)
+
+
+For a client-server architecture project in Rust. Implement a Directory of Service (DoS). Assume for know that it is implemented in one server only. The role of the DoS is as follows:
+- Registering new clients: when a new client enters the system, it signs up (registers) through the DoS. The DOS should give it a unique ID. The client should save this ID (in a file) for later sign in in the system. This is because a certain client IP can host multiple clients.
+- Signing in an already existing client: The client should sign in with its ID. The DoS should mark the client online. 
+- Sign out a client: The client should ask the DoS to sign out. The DoS should mark the client offline.
+- Store all the clients in the system: The DoS should store all the clients in the system including their (status: online/offline, Client IP, Client ID, The Images they have downsample). This is because each client possess some images. Each image include (ImageID (unique), Image Data). The image should be downsample in order not to waste storage.
+Implement this in Rust. Use tokio library or TCP stream for communication if necessary. Give comments and detailed explanation of the code.
+
+Assume the following directory structure for the project: Client directory and Server directory. The Client directory has client.rs, middleware.rs, and main.rs source files. The Server directory has server.rs, middleware.rs, and main.rs source files. The client and the server are separate entities. The client.rs can only communicate with its middleware through tx and rx (from tokio:mpsc). Likewise, the server.rs can only communicate with its middleware through tx and rx (from tokio:mpsc). To send data from the client to the server, it must be sent to the client middleware first via tokio and then the client middleware send it to the server middleware via TCP stream. 
+
+Adjust the code to do the following:
+- The client.rs handles the client request whether to register, sign in, sign out, or list all the DoS content. 
+- The client middleware should have this request via tokio, and send the request to the server middleware via TCP stream.
+- The server middleware should have the DoS as well as all functionalities of register, sign in, sign out, and list. It should listen to the request via the TCP stream, and handles the request accordingly. If data are to be sent back to the client. It should be sent back to the client middleware first, and then to the client.
+
+
+main branch or stokio branch --> resize image for low resolution
+=============================================
+1. Extra views request from ... (.. is wrong)
+Request denial is Failed to deserialize response from other client.
+shred_by should be by id?
+
+6. Should we add Arc<Mutex<>> to the DoS? It works well wothout it
+9. Owners send access rights updates to DOS in case viewers are offline.
+The DOS should enforce these updates on the viewers once they are back online (Push Notification).
+10. Ctrl + c --> before killing the process must send to the DOS it is offline.
+11. .gitignore
+12. -load after handling the request
+
+14. review ownership
+17. Tefa's bug: owner doesn't receive a new request except when initiating a new connection <=  Mitigated
+19. viewer enter owner id not ip (make the id small) -- I think IP address would be much easier and we get it from DOS anyways
+20. handling requesting the image (same image with different ids) -- I will leave for now for the sake of testing
+22. implement edit access rights as an owner for any viewer
+23. Do we need to save the decrypted image to temporary file? -yes to avoid the headache of dependencies
+24. choose which pending requests to handle
+26. Image name unique per clinet <= it should act instead of ID
+27. Denial "Failed to deserialize extra views response from owner."
+29. We used client ip in the past as id (with images and other things). Need to change ig <= changed for image request
+30. Maybe add functionalities to view my own images?
+
+
+Additional:
+I don't check if the image name is already saved in the dos. I just append. 
+
+LdeIDlJk sea, nature, couple
+siYAPMCP cat, girl, rooler

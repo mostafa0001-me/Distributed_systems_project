@@ -1,0 +1,2 @@
+{"image_id":"sea","image_path":"Client_LdeIDlJk/Encrypted_images/sea_encrypted.png","shared_by":"127.0.0.1:8080","shared_with_ip":"siYAPMCP","shared_with_id":"127.0.0.1:8081","allowed_views":1}
+{"image_id":"nature","image_path":"Client_LdeIDlJk/Encrypted_images/nature_encrypted.png","shared_by":"127.0.0.1:8080","shared_with_ip":"siYAPMCP","shared_with_id":"127.0.0.1:8081","allowed_views":2}

@@ -1,0 +1,2 @@
+{"image_id":"cat","image_path":"Client_siYAPMCP/Encrypted_images/cat_encrypted.png","shared_by":"127.0.0.1:8081","shared_with_ip":"LdeIDlJk","shared_with_id":"127.0.0.1:8080","allowed_views":3}
+{"image_id":"girl","image_path":"Client_siYAPMCP/Encrypted_images/girl_encrypted.png","shared_by":"127.0.0.1:8081","shared_with_ip":"LdeIDlJk","shared_with_id":"127.0.0.1:8080","allowed_views":6}
